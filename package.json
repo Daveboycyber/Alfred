@@ -1,0 +1,15 @@
+{
+  "name": "alfred",
+  "version": "0.1.0",
+  "description": "Personal agent on a Fly.io Sprite that does useful work under policy",
+  "type": "module",
+  "scripts": {
+    "start": "tsx agent/index.ts",
+    "dev": "tsx watch agent/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
