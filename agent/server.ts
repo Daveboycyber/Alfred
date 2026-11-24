@@ -1,9 +1,10 @@
-// Alfred web interface — tool use under policy
+// Alfred web interface — multi-step agent + tools under policy
 import { createServer } from "node:http";
-import { checkAction, commitAction, Policy, Usage } from "./policy";
+import { checkAction, commitAction } from "./policy";
 import { callGrok } from "./llm";
 import { load, save, State, HistoryItem } from "./store";
 import { fetchPage } from "./tools";
+import { runAgentLoop } from "./agent";
 
 let state: State = load();
 
@@ -17,11 +18,17 @@ function ensureDaily() {
 }
 ensureDaily();
 
-const TASKS: Record<string, { cost: number; prompt: (t: string, ctx: string) => string; label: string; usesTool?: boolean }> = {
+const TASKS: Record<string, { cost: number; prompt: (t: string, ctx: string) => string; label: string; usesTool?: boolean; agent?: boolean }> = {
   chat: {
     cost: 5,
     label: "Chat",
     prompt: (t, ctx) => `You are Alfred, a helpful personal agent that works under policy. ${ctx ? "Conversation so far:\n" + ctx + "\n\n" : ""}User: ${t}\n\nReply helpfully and concisely.`,
+  },
+  agent: {
+    cost: 8,
+    label: "Agent",
+    agent: true,
+    prompt: () => "",
   },
   summarize: {
     cost: 6,
@@ -52,7 +59,7 @@ const TASKS: Record<string, { cost: number; prompt: (t: string, ctx: string) => 
     cost: 9,
     label: "Fetch & Summarize",
     usesTool: true,
-    prompt: (t, ctx) => `You are Alfred. The user gave a URL or asked about a page. Fetch content is provided below. Summarize the key points in 3-4 bullets and note anything important.\n\n${t}`,
+    prompt: (t) => `You are Alfred. Summarize the key points of this page in 3-4 bullets:\n\n${t}`,
   },
 };
 
@@ -96,6 +103,7 @@ const html = `<!DOCTYPE html>
   button.primary:disabled { opacity: .5; cursor: not-allowed; }
   .cost { color: var(--muted); font-size: 13px; }
   .result { white-space: pre-wrap; line-height: 1.55; font-size: 15px; }
+  .steps { font-size: 13px; color: var(--muted); margin-top: 10px; }
   .error { color: var(--danger); }
   .meta { color: var(--muted); font-size: 13px; margin-top: 10px; display: flex; justify-content: space-between; }
   .copy { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 3px 8px; cursor: pointer; font-size: 12px; }
@@ -110,7 +118,7 @@ const html = `<!DOCTYPE html>
 <div class="wrap">
   <header>
     <h1><span>Alfred</span></h1>
-    <div class="badge">Sprite + Policy + Tools</div>
+    <div class="badge">Sprite + Policy + Agent</div>
   </header>
 
   <div id="frozenBanner" class="frozen-banner">Agent is frozen. Unfreeze to continue.</div>
@@ -132,7 +140,8 @@ const html = `<!DOCTYPE html>
 
   <div class="card">
     <div class="tasks" id="tasks">
-      <button data-task="chat" class="active">Chat</button>
+      <button data-task="agent" class="active">Agent</button>
+      <button data-task="chat">Chat</button>
       <button data-task="summarize">Summarize</button>
       <button data-task="research">Research</button>
       <button data-task="draft">Draft</button>
@@ -140,10 +149,10 @@ const html = `<!DOCTYPE html>
       <button data-task="actions">Action items</button>
       <button data-task="fetch">Fetch & Summarize</button>
     </div>
-    <textarea id="topic" placeholder="Talk to Alfred, give a task, or paste a URL for Fetch & Summarize..."></textarea>
+    <textarea id="topic" placeholder="Give Alfred a goal (Agent mode plans and uses tools under policy)..."></textarea>
     <div class="row">
-      <span class="cost" id="costLabel">Cost: 5</span>
-      <button class="primary" id="go">Ask Alfred</button>
+      <span class="cost" id="costLabel">Cost: ~8+</span>
+      <button class="primary" id="go">Run Alfred</button>
     </div>
   </div>
 
@@ -152,15 +161,15 @@ const html = `<!DOCTYPE html>
 </div>
 
 <script>
-const tasks = ${JSON.stringify(Object.fromEntries(Object.entries(TASKS).map(([k,v]) => [k, {cost: v.cost, label: v.label}])))};
-let current = "chat";
+const tasks = ${JSON.stringify(Object.fromEntries(Object.entries(TASKS).map(([k,v]) => [k, {cost: v.cost, label: v.label, agent: !!v.agent}])))};
+let current = "agent";
 
 const $ = (id) => document.getElementById(id);
 
 function setTask(t) {
   current = t;
   document.querySelectorAll("#tasks button").forEach(b => b.classList.toggle("active", b.dataset.task === t));
-  $("costLabel").textContent = "Cost: " + tasks[t].cost;
+  $("costLabel").textContent = tasks[t].agent ? "Cost: ~8+" : "Cost: " + tasks[t].cost;
 }
 
 document.getElementById("tasks").onclick = (e) => {
@@ -192,7 +201,7 @@ $("go").onclick = async () => {
   const topic = $("topic").value.trim();
   if (!topic) return;
   $("go").disabled = true;
-  $("out").innerHTML = '<div class="card"><div class="meta">Thinking…</div></div>';
+  $("out").innerHTML = '<div class="card"><div class="meta">Working…</div></div>';
 
   const res = await fetch("/ask", {
     method: "POST",
@@ -204,7 +213,14 @@ $("go").onclick = async () => {
   if (data.error) {
     $("out").innerHTML = '<div class="card error">' + data.error + '</div>';
   } else {
-    $("out").innerHTML = '<div class="card"><div class="result">' + data.reply + '</div><div class="meta"><span>' + data.meta + '</span><button class="copy" onclick="navigator.clipboard.writeText(this.closest(\'.card\').querySelector(\'.result\').textContent)">Copy</button></div></div>';
+    let stepsHtml = "";
+    if (data.steps) {
+      stepsHtml = '<div class="steps">' + data.steps.map(s =>
+        (s.tool ? `• Tool: ${s.tool}(${s.toolInput || ""})` : "") +
+        (s.thought ? `<br>• ${s.thought}` : "")
+      ).join("<br>") + '</div>';
+    }
+    $("out").innerHTML = '<div class="card"><div class="result">' + data.reply + '</div>' + stepsHtml + '<div class="meta"><span>' + data.meta + '</span><button class="copy" onclick="navigator.clipboard.writeText(this.closest(\'.card\').querySelector(\'.result\').textContent)">Copy</button></div></div>';
   }
   $("topic").value = "";
   refreshStatus();
@@ -290,29 +306,41 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/ask") {
     let body = "";
     for await (const chunk of req) body += chunk;
-    const { task = "chat", topic } = JSON.parse(body || "{}");
-    const def = TASKS[task] || TASKS.chat;
-
-    const check = checkAction(state.policy, state.usage, def.cost);
-    if (!check.allowed) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: `Policy blocked: ${check.reason}` }));
-      return;
-    }
+    const { task = "agent", topic } = JSON.parse(body || "{}");
+    const def = TASKS[task] || TASKS.agent;
 
     try {
-      let promptInput = topic;
+      let reply = "";
+      let meta = "";
+      let steps: any[] | undefined;
 
-      // Tool use: fetch page under policy
-      if (def.usesTool) {
-        const urlMatch = topic.match(/https?:\/\/[^\s]+/);
-        const target = urlMatch ? urlMatch[0] : topic.trim();
-        const fetched = await fetchPage(target);
-        promptInput = `URL: ${target}\n\nFetched content:\n${fetched}`;
+      if (def.agent) {
+        const result = await runAgentLoop(topic, state.policy, state.usage);
+        reply = result.final;
+        steps = result.steps;
+        state.usage = commitAction(state.usage, result.totalCost);
+        meta = `Agent · cost ${result.totalCost} · spent ${state.usage.spentToday}/${state.policy.maxDaily}`;
+      } else {
+        const check = checkAction(state.policy, state.usage, def.cost);
+        if (!check.allowed) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `Policy blocked: ${check.reason}` }));
+          return;
+        }
+
+        let promptInput = topic;
+        if (def.usesTool) {
+          const urlMatch = topic.match(/https?:\/\/[^\s]+/);
+          const target = urlMatch ? urlMatch[0] : topic.trim();
+          const fetched = await fetchPage(target);
+          promptInput = `URL: ${target}\n\nFetched content:\n${fetched}`;
+        }
+
+        const ctx = recentContext();
+        reply = await callGrok(def.prompt(promptInput, ctx));
+        state.usage = commitAction(state.usage, def.cost);
+        meta = `${def.label} · cost ${def.cost} · spent ${state.usage.spentToday}/${state.policy.maxDaily}`;
       }
-
-      const ctx = recentContext();
-      const reply = await callGrok(def.prompt(promptInput, ctx));
 
       state.messages.push({ role: "user", content: topic });
       state.messages.push({ role: "assistant", content: reply });
@@ -325,15 +353,10 @@ const server = createServer(async (req, res) => {
         ts: Date.now(),
       };
       state.history.unshift(item);
-
-      state.usage = commitAction(state.usage, def.cost);
       save(state);
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        reply,
-        meta: `${def.label} · cost ${def.cost} · spent ${state.usage.spentToday}/${state.policy.maxDaily}`,
-      }));
+      res.end(JSON.stringify({ reply, meta, steps }));
     } catch (err: any) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message || String(err) }));
