@@ -6,15 +6,15 @@ Built for [Hacksgiving 2026](https://fly.io/hacksgiving/).
 
 ## What it is
 
-Alfred is a personal agent that lives on a [Fly.io Sprite](https://fly.io/sprites). It performs useful work (research, summarization, light automation, etc.) while a lightweight, chain-agnostic policy layer keeps it inside defined limits (budget, rate, freeze).
+Alfred is a personal agent that lives on a [Fly.io Sprite](https://fly.io/sprites). It performs useful work (summarization, research, light automation) while a lightweight, chain-agnostic policy layer enforces limits (single-action cost, daily budget, freeze).
 
-It uses at least one Sprites connector (starting with an LLM connector) so the agent can reason and act without holding credentials.
+It uses a Sprites **Custom API connector** to call Grok (xAI) so the agent can reason without the Sprite holding credentials.
 
-## Current status
+## Demo path
 
-- Sprite `alfred` is live
-- Starter agent + policy engine runs on the Sprite
-- Next: wire LLM connector and add useful work under policy
+Running the agent shows:
+1. **Useful work under policy** — Grok summarizes a topic (allowed).
+2. **Policy block** — An oversized action is rejected with a clear reason.
 
 ## Run on Sprite
 
@@ -25,7 +25,7 @@ sprite exec -s alfred -- bash -c "cd Alfred && npm install && npm start"
 ## Hackathon requirements
 
 - Runs on a Sprite
-- Uses ≥1 Sprites connector
+- Uses ≥1 Sprites connector (xAI Custom API)
 - Built during Hacksgiving week (Nov 23–29, 2026)
 
 ## License
