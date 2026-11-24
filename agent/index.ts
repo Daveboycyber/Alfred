@@ -15,26 +15,42 @@ let usage: Usage = {
   lastReset: new Date().toISOString().slice(0, 10),
 };
 
-async function main() {
-  console.log("Alfred starting on Sprite...");
-
-  // Example useful work under policy (cost = 5 units)
-  const cost = 5;
+async function doUsefulWork(topic: string): Promise<void> {
+  const cost = 8;
   const result = checkAction(policy, usage, cost);
 
   if (!result.allowed) {
-    console.log("Blocked:", result.reason);
+    console.log("Policy blocked useful work:", result.reason);
     return;
   }
 
-  console.log("Policy allowed. Asking Grok for a short status...");
+  console.log(`Policy allowed (cost=${cost}). Asking Grok to summarize: "${topic}"`);
   const reply = await callGrok(
-    "You are Alfred, a personal agent. In one sentence, confirm you are running on a Fly.io Sprite under policy and ready to help."
+    `You are Alfred, a personal agent. Summarize the following topic in 3 concise bullet points:\n\n${topic}`
   );
-  console.log("Grok:", reply);
+  console.log("Grok summary:\n", reply);
 
   usage = commitAction(usage, cost);
   console.log("Usage updated:", usage);
+}
+
+async function demoPolicyBlock(): Promise<void> {
+  console.log("\n--- Policy block demo ---");
+  const oversized = 20; // exceeds maxSingle of 10
+  const result = checkAction(policy, usage, oversized);
+  console.log(`Attempted cost=${oversized} →`, result.allowed ? "ALLOWED" : `BLOCKED: ${result.reason}`);
+}
+
+async function main() {
+  console.log("Alfred starting on Sprite...\n");
+
+  // Useful work under policy
+  await doUsefulWork("Why persistent agents on isolated Linux computers matter for security and reliability.");
+
+  // Show a policy block
+  await demoPolicyBlock();
+
+  console.log("\nAlfred finished.");
 }
 
 main().catch(console.error);
