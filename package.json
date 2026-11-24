@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx agent/index.ts",
+    "web": "tsx agent/server.ts",
     "dev": "tsx watch agent/index.ts"
   },
   "devDependencies": {
