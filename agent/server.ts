@@ -1,4 +1,4 @@
-// Alfred web interface — multi-step agent + tools under policy
+// Alfred web interface — polished UI
 import { createServer } from "node:http";
 import { checkAction, commitAction } from "./policy";
 import { callGrok } from "./llm";
@@ -19,48 +19,14 @@ function ensureDaily() {
 ensureDaily();
 
 const TASKS: Record<string, { cost: number; prompt: (t: string, ctx: string) => string; label: string; usesTool?: boolean; agent?: boolean }> = {
-  chat: {
-    cost: 5,
-    label: "Chat",
-    prompt: (t, ctx) => `You are Alfred, a helpful personal agent that works under policy. ${ctx ? "Conversation so far:\n" + ctx + "\n\n" : ""}User: ${t}\n\nReply helpfully and concisely.`,
-  },
-  agent: {
-    cost: 8,
-    label: "Agent",
-    agent: true,
-    prompt: () => "",
-  },
-  summarize: {
-    cost: 6,
-    label: "Summarize",
-    prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Summarize the following in 3 concise bullet points:\n\n${t}`,
-  },
-  research: {
-    cost: 8,
-    label: "Research",
-    prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Research the topic and return 4 key points with a one-sentence takeaway:\n\n${t}`,
-  },
-  draft: {
-    cost: 9,
-    label: "Draft",
-    prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Write a short, clear draft (3-5 sentences) based on this request:\n\n${t}`,
-  },
-  explain: {
-    cost: 7,
-    label: "Explain",
-    prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Explain the following simply, as if to a smart non-expert, in 2-3 short paragraphs:\n\n${t}`,
-  },
-  actions: {
-    cost: 7,
-    label: "Action items",
-    prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Turn the following into a short list of concrete next actions (max 5):\n\n${t}`,
-  },
-  fetch: {
-    cost: 9,
-    label: "Fetch & Summarize",
-    usesTool: true,
-    prompt: (t) => `You are Alfred. Summarize the key points of this page in 3-4 bullets:\n\n${t}`,
-  },
+  agent: { cost: 8, label: "Agent", agent: true, prompt: () => "" },
+  chat: { cost: 5, label: "Chat", prompt: (t, ctx) => `You are Alfred. ${ctx ? "Context:\n" + ctx + "\n\n" : ""}User: ${t}\n\nReply helpfully.` },
+  summarize: { cost: 6, label: "Summarize", prompt: (t, ctx) => `Summarize in 3 bullets:\n\n${t}` },
+  research: { cost: 8, label: "Research", prompt: (t, ctx) => `Research and give 4 key points:\n\n${t}` },
+  draft: { cost: 9, label: "Draft", prompt: (t, ctx) => `Write a short draft:\n\n${t}` },
+  explain: { cost: 7, label: "Explain", prompt: (t, ctx) => `Explain simply:\n\n${t}` },
+  actions: { cost: 7, label: "Actions", prompt: (t, ctx) => `List concrete next actions:\n\n${t}` },
+  fetch: { cost: 9, label: "Fetch", usesTool: true, prompt: (t) => `Summarize this page:\n\n${t}` },
 };
 
 function recentContext(): string {
@@ -75,84 +41,105 @@ const html = `<!DOCTYPE html>
 <title>Alfred</title>
 <style>
   :root {
-    --bg: #0c0c0f; --card: #16161c; --border: #2a2a32;
-    --text: #e8e8ed; --muted: #8a8a96; --accent: #c8f542;
-    --accent-dim: #9bc92e; --danger: #ff6b6b;
+    --bg: #111111;
+    --surface: #1c1c1c;
+    --surface-2: #242424;
+    --border: #2e2e2e;
+    --text: #f4f4f0;
+    --muted: #a1a1a1;
+    --accent: #d4ff00;
+    --accent-fg: #111;
+    --danger: #ff6b6b;
+    --radius: 12px;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
-  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 18px 70px; }
-  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
-  h1 { margin: 0; font-size: 26px; }
-  h1 span { color: var(--accent); }
-  .badge { font-size: 12px; background: #1e2a12; color: var(--accent); padding: 4px 10px; border-radius: 999px; border: 1px solid #2f4018; }
-  .status { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; display: grid; grid-template-columns: 1fr auto; gap: 12px; font-size: 14px; }
-  .status b { color: var(--accent); }
-  .meter { height: 6px; background: #222; border-radius: 3px; margin-top: 6px; overflow: hidden; }
-  .meter > div { height: 100%; background: var(--accent); width: 0%; transition: width .3s; }
-  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
-  .controls button, .controls input { background: #111114; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 18px; margin-bottom: 14px; }
-  .tasks { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
-  .tasks button { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 7px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; }
+  body { min-height: 100dvh; }
+  .page { max-width: 920px; margin: 0 auto; padding: 28px 20px 80px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+  .logo { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; }
+  .logo span { color: var(--accent); }
+  .pill { font-size: 12px; background: #1e2a12; color: var(--accent); padding: 5px 12px; border-radius: 999px; border: 1px solid #33421a; }
+  .status-grid { display: grid; grid-template-columns: 1fr auto; gap: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 16px; }
+  .status-grid b { color: var(--accent); }
+  .meter { height: 6px; background: #2a2a2a; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+  .meter > div { height: 100%; background: var(--accent); width: 0%; transition: width .35s ease; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button, .btn {
+    background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer;
+    transition: background .15s, border-color .15s, transform .1s;
+  }
+  button:hover, .btn:hover { background: #2e2e2e; border-color: #444; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); color: var(--accent-fg); border: none; font-weight: 600; padding: 10px 20px; }
+  button.primary:hover { background: #e0ff33; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  .tasks { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .tasks button { border-radius: 999px; padding: 6px 14px; }
   .tasks button.active { background: #1e2a12; color: var(--accent); border-color: #3a4f20; }
-  textarea { width: 100%; min-height: 88px; background: #111114; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 12px; font-family: inherit; font-size: 15px; resize: vertical; }
-  textarea:focus { outline: none; border-color: var(--accent-dim); }
-  .row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
-  button.primary { background: var(--accent); color: #111; border: none; padding: 10px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; }
-  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+  .composer { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px; }
+  textarea {
+    width: 100%; min-height: 96px; background: #111; color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px; padding: 14px;
+    font-family: inherit; font-size: 15px; resize: vertical;
+  }
+  textarea:focus { outline: none; border-color: #5a7a2a; }
+  .row { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
   .cost { color: var(--muted); font-size: 13px; }
-  .result { white-space: pre-wrap; line-height: 1.55; font-size: 15px; }
-  .steps { font-size: 13px; color: var(--muted); margin-top: 10px; }
-  .error { color: var(--danger); }
-  .meta { color: var(--muted); font-size: 13px; margin-top: 10px; display: flex; justify-content: space-between; }
-  .copy { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 3px 8px; cursor: pointer; font-size: 12px; }
-  .history { margin-top: 20px; }
-  .history h3 { font-size: 13px; color: var(--muted); margin: 0 0 8px; font-weight: 500; }
-  .item { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; font-size: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-top: 16px; }
+  .result { white-space: pre-wrap; line-height: 1.55; font-size: 15.5px; }
+  .steps { font-size: 13px; color: var(--muted); margin-top: 12px; line-height: 1.5; }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 12px; display: flex; justify-content: space-between; align-items: center; }
+  .copy { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .history { margin-top: 28px; }
+  .history h3 { font-size: 13px; color: var(--muted); font-weight: 500; margin: 0 0 10px; }
+  .item { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; font-size: 14px; }
   .item .q { color: var(--muted); margin-bottom: 4px; }
-  .frozen-banner { background: #3a1a1a; color: var(--danger); padding: 10px 14px; border-radius: 10px; margin-bottom: 14px; display: none; }
+  .frozen { background: #3a1a1a; color: var(--danger); padding: 12px 16px; border-radius: 10px; margin-bottom: 14px; display: none; }
+  .error { color: var(--danger); }
+  input[type=number] { background: #111; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 8px; width: 70px; }
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="page">
   <header>
-    <h1><span>Alfred</span></h1>
-    <div class="badge">Sprite + Policy + Agent</div>
+    <div class="logo"><span>Alfred</span></div>
+    <div class="pill">Sprite · Policy · Agent</div>
   </header>
 
-  <div id="frozenBanner" class="frozen-banner">Agent is frozen. Unfreeze to continue.</div>
+  <div id="frozenBanner" class="frozen">Agent is frozen. Unfreeze to continue.</div>
 
-  <div class="status">
+  <div class="status-grid">
     <div>
       Spent today: <b id="spent">0</b> / <b id="daily">50</b>
       <div class="meter"><div id="bar"></div></div>
     </div>
     <div class="controls">
-      <button id="freezeBtn">Freeze</button>
-      <button id="resetBtn">Reset usage</button>
-      <button id="clearHistory">Clear history</button>
-      <input id="maxSingle" type="number" min="1" style="width:70px" title="Max single">
-      <input id="maxDaily" type="number" min="1" style="width:70px" title="Max daily">
-      <button id="saveLimits">Save limits</button>
+      <button id="freezeBtn" type="button">Freeze</button>
+      <button id="resetBtn" type="button">Reset</button>
+      <button id="clearHistory" type="button">Clear</button>
+      <input id="maxSingle" type="number" min="1" title="Max single">
+      <input id="maxDaily" type="number" min="1" title="Max daily">
+      <button id="saveLimits" type="button">Save</button>
     </div>
   </div>
 
-  <div class="card">
+  <div class="composer">
     <div class="tasks" id="tasks">
-      <button data-task="agent" class="active">Agent</button>
-      <button data-task="chat">Chat</button>
-      <button data-task="summarize">Summarize</button>
-      <button data-task="research">Research</button>
-      <button data-task="draft">Draft</button>
-      <button data-task="explain">Explain</button>
-      <button data-task="actions">Action items</button>
-      <button data-task="fetch">Fetch & Summarize</button>
+      <button type="button" data-task="agent" class="active">Agent</button>
+      <button type="button" data-task="chat">Chat</button>
+      <button type="button" data-task="summarize">Summarize</button>
+      <button type="button" data-task="research">Research</button>
+      <button type="button" data-task="draft">Draft</button>
+      <button type="button" data-task="explain">Explain</button>
+      <button type="button" data-task="actions">Actions</button>
+      <button type="button" data-task="fetch">Fetch</button>
     </div>
-    <textarea id="topic" placeholder="Give Alfred a goal (Agent mode plans and uses tools under policy)..."></textarea>
+    <textarea id="topic" placeholder="Give Alfred a goal. Agent mode plans and uses tools under policy."></textarea>
     <div class="row">
-      <span class="cost" id="costLabel">Cost: ~8+</span>
-      <button class="primary" id="go">Run Alfred</button>
+      <span class="cost" id="costLabel">Cost ~8+</span>
+      <button class="primary" id="go" type="button">Run Alfred</button>
     </div>
   </div>
 
@@ -164,79 +151,89 @@ const html = `<!DOCTYPE html>
 const tasks = ${JSON.stringify(Object.fromEntries(Object.entries(TASKS).map(([k,v]) => [k, {cost: v.cost, label: v.label, agent: !!v.agent}])))};
 let current = "agent";
 
-const $ = (id) => document.getElementById(id);
+function $(id) { return document.getElementById(id); }
 
 function setTask(t) {
   current = t;
-  document.querySelectorAll("#tasks button").forEach(b => b.classList.toggle("active", b.dataset.task === t));
-  $("costLabel").textContent = tasks[t].agent ? "Cost: ~8+" : "Cost: " + tasks[t].cost;
+  document.querySelectorAll("#tasks button").forEach(b => {
+    b.classList.toggle("active", b.dataset.task === t);
+  });
+  $("costLabel").textContent = tasks[t].agent ? "Cost ~8+" : "Cost " + tasks[t].cost;
 }
 
-document.getElementById("tasks").onclick = (e) => {
-  if (e.target.dataset.task) setTask(e.target.dataset.task);
-};
+document.getElementById("tasks").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-task]");
+  if (btn) setTask(btn.dataset.task);
+});
 
 async function refreshStatus() {
-  const r = await fetch("/status").then(r => r.json());
-  $("spent").textContent = r.spentToday;
-  $("daily").textContent = r.maxDaily;
-  $("bar").style.width = Math.min(100, (r.spentToday / r.maxDaily) * 100) + "%";
-  $("maxSingle").value = r.maxSingle;
-  $("maxDaily").value = r.maxDaily;
-  $("freezeBtn").textContent = r.frozen ? "Unfreeze" : "Freeze";
-  $("frozenBanner").style.display = r.frozen ? "block" : "none";
-  $("go").disabled = r.frozen;
+  try {
+    const r = await fetch("/status").then(r => r.json());
+    $("spent").textContent = r.spentToday;
+    $("daily").textContent = r.maxDaily;
+    $("bar").style.width = Math.min(100, (r.spentToday / r.maxDaily) * 100) + "%";
+    $("maxSingle").value = r.maxSingle;
+    $("maxDaily").value = r.maxDaily;
+    $("freezeBtn").textContent = r.frozen ? "Unfreeze" : "Freeze";
+    $("frozenBanner").style.display = r.frozen ? "block" : "none";
+    $("go").disabled = r.frozen;
 
-  const hist = $("history");
-  hist.innerHTML = r.history?.length ? '<h3>Recent</h3>' : '';
-  (r.history || []).forEach(h => {
-    const div = document.createElement("div");
-    div.className = "item";
-    div.innerHTML = '<div class="q">' + h.task + ': ' + (h.topic || '').slice(0, 90) + '</div><div>' + (h.reply || '').slice(0, 180) + '</div>';
-    hist.appendChild(div);
-  });
+    const hist = $("history");
+    hist.innerHTML = r.history && r.history.length ? "<h3>Recent</h3>" : "";
+    (r.history || []).forEach(h => {
+      const div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML = "<div class=\"q\">" + h.task + ": " + (h.topic || "").slice(0, 90) + "</div><div>" + (h.reply || "").slice(0, 180) + "</div>";
+      hist.appendChild(div);
+    });
+  } catch (e) { console.error(e); }
 }
 
-$("go").onclick = async () => {
+$("go").addEventListener("click", async () => {
   const topic = $("topic").value.trim();
   if (!topic) return;
   $("go").disabled = true;
   $("out").innerHTML = '<div class="card"><div class="meta">Working...</div></div>';
 
-  const res = await fetch("/ask", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ task: current, topic })
-  });
-  const data = await res.json();
+  try {
+    const res = await fetch("/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task: current, topic })
+    });
+    const data = await res.json();
 
-  if (data.error) {
-    $("out").innerHTML = '<div class="card error">' + data.error + '</div>';
-  } else {
-    let stepsHtml = "";
-    if (data.steps) {
-      stepsHtml = '<div class="steps">' + data.steps.map(s =>
-        (s.tool ? "- Tool: " + s.tool + "(" + (s.toolInput || "") + ")" : "") +
-        (s.thought ? "<br>- " + s.thought : "")
-      ).join("<br>") + '</div>';
+    if (data.error) {
+      $("out").innerHTML = '<div class="card error">' + data.error + '</div>';
+    } else {
+      let stepsHtml = "";
+      if (data.steps) {
+        stepsHtml = '<div class="steps">' + data.steps.map(s =>
+          (s.tool ? "- " + s.tool + "(" + (s.toolInput || "") + ")" : "") +
+          (s.thought ? "<br>- " + s.thought : "")
+        ).join("<br>") + '</div>';
+      }
+      $("out").innerHTML = '<div class="card"><div class="result">' + data.reply + '</div>' + stepsHtml + '<div class="meta"><span>' + (data.meta || "") + '</span><button class="copy" type="button">Copy</button></div></div>';
+      $("out").querySelector(".copy").onclick = () => navigator.clipboard.writeText(data.reply);
     }
-    $("out").innerHTML = '<div class="card"><div class="result">' + data.reply + '</div>' + stepsHtml + '<div class="meta"><span>' + data.meta + '</span><button class="copy" onclick="navigator.clipboard.writeText(this.closest(\'.card\').querySelector(\'.result\').textContent)">Copy</button></div></div>';
+  } catch (err) {
+    $("out").innerHTML = '<div class="card error">Request failed</div>';
   }
   $("topic").value = "";
   refreshStatus();
-};
+});
 
-$("freezeBtn").onclick = async () => { await fetch("/freeze", { method: "POST" }); refreshStatus(); };
-$("resetBtn").onclick = async () => { await fetch("/reset", { method: "POST" }); refreshStatus(); };
-$("clearHistory").onclick = async () => { await fetch("/clear-history", { method: "POST" }); refreshStatus(); };
-$("saveLimits").onclick = async () => {
+$("freezeBtn").addEventListener("click", async () => { await fetch("/freeze", { method: "POST" }); refreshStatus(); });
+$("resetBtn").addEventListener("click", async () => { await fetch("/reset", { method: "POST" }); refreshStatus(); });
+$("clearHistory").addEventListener("click", async () => { await fetch("/clear-history", { method: "POST" }); refreshStatus(); });
+$("saveLimits").addEventListener("click", async () => {
   await fetch("/limits", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ maxSingle: Number($("maxSingle").value), maxDaily: Number($("maxDaily").value) })
   });
   refreshStatus();
-};
+});
 
 refreshStatus();
 </script>
@@ -248,7 +245,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
   if (req.method === "GET" && url.pathname === "/") {
-    res.writeHead(200, { "Content-Type": "text/html" });
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(html);
     return;
   }
