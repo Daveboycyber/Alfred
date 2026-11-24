@@ -1,46 +1,58 @@
-// Alfred web interface — expanded capabilities
+// Alfred web interface — persistence + multi-turn
 import { createServer } from "node:http";
 import { checkAction, commitAction, Policy, Usage } from "./policy";
 import { callGrok } from "./llm";
+import { load, save, State, HistoryItem } from "./store";
 
-const policy: Policy = {
-  maxSingle: 10,
-  maxDaily: 50,
-  frozen: false,
-};
+let state: State = load();
 
-let usage: Usage = {
-  spentToday: 0,
-  lastReset: new Date().toISOString().slice(0, 10),
-};
+// Daily reset check
+function ensureDaily() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (state.usage.lastReset !== today) {
+    state.usage.spentToday = 0;
+    state.usage.lastReset = today;
+    save(state);
+  }
+}
+ensureDaily();
 
-const TASKS: Record<string, { cost: number; prompt: (t: string) => string; label: string }> = {
+const TASKS: Record<string, { cost: number; prompt: (t: string, ctx: string) => string; label: string }> = {
   summarize: {
     cost: 6,
     label: "Summarize",
-    prompt: (t) => `You are Alfred. Summarize the following in 3 concise bullet points:\n\n${t}`,
+    prompt: (t, ctx) => `You are Alfred, a personal agent. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Summarize the following in 3 concise bullet points:\n\n${t}`,
   },
   research: {
     cost: 8,
     label: "Research",
-    prompt: (t) => `You are Alfred. Research the topic and return 4 key points with a one-sentence takeaway:\n\n${t}`,
+    prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Research the topic and return 4 key points with a one-sentence takeaway:\n\n${t}`,
   },
   draft: {
     cost: 9,
     label: "Draft",
-    prompt: (t) => `You are Alfred. Write a short, clear draft (3-5 sentences) based on this request:\n\n${t}`,
+    prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Write a short, clear draft (3-5 sentences) based on this request:\n\n${t}`,
   },
   explain: {
     cost: 7,
     label: "Explain",
-    prompt: (t) => `You are Alfred. Explain the following simply, as if to a smart non-expert, in 2-3 short paragraphs:\n\n${t}`,
+    prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Explain the following simply, as if to a smart non-expert, in 2-3 short paragraphs:\n\n${t}`,
   },
   actions: {
     cost: 7,
     label: "Action items",
-    prompt: (t) => `You are Alfred. Turn the following into a short list of concrete next actions (max 5):\n\n${t}`,
+    prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Turn the following into a short list of concrete next actions (max 5):\n\n${t}`,
+  },
+  chat: {
+    cost: 5,
+    label: "Chat",
+    prompt: (t, ctx) => `You are Alfred, a helpful personal agent that works under policy. ${ctx ? "Conversation so far:\n" + ctx + "\n\n" : ""}User: ${t}\n\nReply helpfully and concisely.`,
   },
 };
+
+function recentContext(): string {
+  return state.messages.slice(-6).map(m => `${m.role}: ${m.content}`).join("\n");
+}
 
 const html = `<!DOCTYPE html>
 <html lang="en">
@@ -52,7 +64,7 @@ const html = `<!DOCTYPE html>
   :root {
     --bg: #0c0c0f; --card: #16161c; --border: #2a2a32;
     --text: #e8e8ed; --muted: #8a8a96; --accent: #c8f542;
-    --accent-dim: #9bc92e; --danger: #ff6b6b; --warn: #ffb347;
+    --accent-dim: #9bc92e; --danger: #ff6b6b;
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
@@ -67,7 +79,6 @@ const html = `<!DOCTYPE html>
   .meter > div { height: 100%; background: var(--accent); width: 0%; transition: width .3s; }
   .controls { display: flex; gap: 8px; flex-wrap: wrap; }
   .controls button, .controls input { background: #111114; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 13px; }
-  .controls button:hover { border-color: var(--accent-dim); }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 18px; margin-bottom: 14px; }
   .tasks { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
   .tasks button { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 7px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; }
@@ -106,6 +117,7 @@ const html = `<!DOCTYPE html>
     <div class="controls">
       <button id="freezeBtn">Freeze</button>
       <button id="resetBtn">Reset usage</button>
+      <button id="clearHistory">Clear history</button>
       <input id="maxSingle" type="number" min="1" style="width:70px" title="Max single">
       <input id="maxDaily" type="number" min="1" style="width:70px" title="Max daily">
       <button id="saveLimits">Save limits</button>
@@ -114,15 +126,16 @@ const html = `<!DOCTYPE html>
 
   <div class="card">
     <div class="tasks" id="tasks">
-      <button data-task="summarize" class="active">Summarize</button>
+      <button data-task="chat" class="active">Chat</button>
+      <button data-task="summarize">Summarize</button>
       <button data-task="research">Research</button>
       <button data-task="draft">Draft</button>
       <button data-task="explain">Explain</button>
       <button data-task="actions">Action items</button>
     </div>
-    <textarea id="topic" placeholder="What should Alfred do?"></textarea>
+    <textarea id="topic" placeholder="Talk to Alfred or give it a task..."></textarea>
     <div class="row">
-      <span class="cost" id="costLabel">Cost: 6</span>
+      <span class="cost" id="costLabel">Cost: 5</span>
       <button class="primary" id="go">Ask Alfred</button>
     </div>
   </div>
@@ -133,7 +146,7 @@ const html = `<!DOCTYPE html>
 
 <script>
 const tasks = ${JSON.stringify(Object.fromEntries(Object.entries(TASKS).map(([k,v]) => [k, {cost: v.cost, label: v.label}])))};
-let current = "summarize";
+let current = "chat";
 
 const $ = (id) => document.getElementById(id);
 
@@ -157,6 +170,16 @@ async function refreshStatus() {
   $("freezeBtn").textContent = r.frozen ? "Unfreeze" : "Freeze";
   $("frozenBanner").style.display = r.frozen ? "block" : "none";
   $("go").disabled = r.frozen;
+
+  // Render persisted history
+  const hist = $("history");
+  hist.innerHTML = r.history?.length ? '<h3>Recent</h3>' : '';
+  (r.history || []).forEach(h => {
+    const div = document.createElement("div");
+    div.className = "item";
+    div.innerHTML = '<div class="q">' + h.task + ': ' + (h.topic || '').slice(0, 90) + '</div><div>' + (h.reply || '').slice(0, 180) + '</div>';
+    hist.appendChild(div);
+  });
 }
 
 $("go").onclick = async () => {
@@ -176,39 +199,22 @@ $("go").onclick = async () => {
     $("out").innerHTML = '<div class="card error">' + data.error + '</div>';
   } else {
     $("out").innerHTML = '<div class="card"><div class="result">' + data.reply + '</div><div class="meta"><span>' + data.meta + '</span><button class="copy" onclick="navigator.clipboard.writeText(this.closest(\'.card\').querySelector(\'.result\').textContent)">Copy</button></div></div>';
-    addHistory(tasks[current].label, topic, data.reply);
   }
+  $("topic").value = "";
   refreshStatus();
 };
 
-$("freezeBtn").onclick = async () => {
-  await fetch("/freeze", { method: "POST" });
-  refreshStatus();
-};
-
-$("resetBtn").onclick = async () => {
-  await fetch("/reset", { method: "POST" });
-  refreshStatus();
-};
-
+$("freezeBtn").onclick = async () => { await fetch("/freeze", { method: "POST" }); refreshStatus(); };
+$("resetBtn").onclick = async () => { await fetch("/reset", { method: "POST" }); refreshStatus(); };
+$("clearHistory").onclick = async () => { await fetch("/clear-history", { method: "POST" }); refreshStatus(); };
 $("saveLimits").onclick = async () => {
   await fetch("/limits", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      maxSingle: Number($("maxSingle").value),
-      maxDaily: Number($("maxDaily").value),
-    })
+    body: JSON.stringify({ maxSingle: Number($("maxSingle").value), maxDaily: Number($("maxDaily").value) })
   });
   refreshStatus();
 };
-
-function addHistory(label, q, a) {
-  const div = document.createElement("div");
-  div.className = "item";
-  div.innerHTML = '<div class="q">' + label + ': ' + q.slice(0, 90) + '</div><div>' + a.slice(0, 180) + (a.length > 180 ? "…" : "") + '</div>';
-  $("history").prepend(div);
-}
 
 refreshStatus();
 </script>
@@ -216,6 +222,7 @@ refreshStatus();
 </html>`;
 
 const server = createServer(async (req, res) => {
+  ensureDaily();
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
   if (req.method === "GET" && url.pathname === "/") {
@@ -227,24 +234,36 @@ const server = createServer(async (req, res) => {
   if (req.method === "GET" && url.pathname === "/status") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
-      spentToday: usage.spentToday,
-      maxDaily: policy.maxDaily,
-      maxSingle: policy.maxSingle,
-      frozen: policy.frozen,
+      spentToday: state.usage.spentToday,
+      maxDaily: state.policy.maxDaily,
+      maxSingle: state.policy.maxSingle,
+      frozen: state.policy.frozen,
+      history: state.history.slice(0, 12),
     }));
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/freeze") {
-    policy.frozen = !policy.frozen;
+    state.policy.frozen = !state.policy.frozen;
+    save(state);
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ frozen: policy.frozen }));
+    res.end(JSON.stringify({ frozen: state.policy.frozen }));
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/reset") {
-    usage.spentToday = 0;
-    usage.lastReset = new Date().toISOString().slice(0, 10);
+    state.usage.spentToday = 0;
+    state.usage.lastReset = new Date().toISOString().slice(0, 10);
+    save(state);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/clear-history") {
+    state.history = [];
+    state.messages = [];
+    save(state);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -254,20 +273,21 @@ const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
     const { maxSingle, maxDaily } = JSON.parse(body || "{}");
-    if (typeof maxSingle === "number" && maxSingle > 0) policy.maxSingle = maxSingle;
-    if (typeof maxDaily === "number" && maxDaily > 0) policy.maxDaily = maxDaily;
+    if (typeof maxSingle === "number" && maxSingle > 0) state.policy.maxSingle = maxSingle;
+    if (typeof maxDaily === "number" && maxDaily > 0) state.policy.maxDaily = maxDaily;
+    save(state);
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ maxSingle: policy.maxSingle, maxDaily: policy.maxDaily }));
+    res.end(JSON.stringify({ maxSingle: state.policy.maxSingle, maxDaily: state.policy.maxDaily }));
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/ask") {
     let body = "";
     for await (const chunk of req) body += chunk;
-    const { task = "summarize", topic } = JSON.parse(body || "{}");
-    const def = TASKS[task] || TASKS.summarize;
+    const { task = "chat", topic } = JSON.parse(body || "{}");
+    const def = TASKS[task] || TASKS.chat;
 
-    const check = checkAction(policy, usage, def.cost);
+    const check = checkAction(state.policy, state.usage, def.cost);
     if (!check.allowed) {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: `Policy blocked: ${check.reason}` }));
@@ -275,12 +295,29 @@ const server = createServer(async (req, res) => {
     }
 
     try {
-      const reply = await callGrok(def.prompt(topic));
-      usage = commitAction(usage, def.cost);
+      const ctx = recentContext();
+      const reply = await callGrok(def.prompt(topic, ctx));
+
+      // Update memory
+      state.messages.push({ role: "user", content: topic });
+      state.messages.push({ role: "assistant", content: reply });
+
+      const item: HistoryItem = {
+        id: Date.now().toString(36),
+        task: def.label,
+        topic,
+        reply,
+        ts: Date.now(),
+      };
+      state.history.unshift(item);
+
+      state.usage = commitAction(state.usage, def.cost);
+      save(state);
+
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         reply,
-        meta: `${def.label} · cost ${def.cost} · spent ${usage.spentToday}/${policy.maxDaily}`,
+        meta: `${def.label} · cost ${def.cost} · spent ${state.usage.spentToday}/${state.policy.maxDaily}`,
       }));
     } catch (err: any) {
       res.writeHead(500, { "Content-Type": "application/json" });
