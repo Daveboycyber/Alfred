@@ -201,7 +201,7 @@ $("go").onclick = async () => {
   const topic = $("topic").value.trim();
   if (!topic) return;
   $("go").disabled = true;
-  $("out").innerHTML = '<div class="card"><div class="meta">Working…</div></div>';
+  $("out").innerHTML = '<div class="card"><div class="meta">Working...</div></div>';
 
   const res = await fetch("/ask", {
     method: "POST",
@@ -216,8 +216,8 @@ $("go").onclick = async () => {
     let stepsHtml = "";
     if (data.steps) {
       stepsHtml = '<div class="steps">' + data.steps.map(s =>
-        (s.tool ? `• Tool: ${s.tool}(${s.toolInput || ""})` : "") +
-        (s.thought ? `<br>• ${s.thought}` : "")
+        (s.tool ? "- Tool: " + s.tool + "(" + (s.toolInput || "") + ")" : "") +
+        (s.thought ? "<br>- " + s.thought : "")
       ).join("<br>") + '</div>';
     }
     $("out").innerHTML = '<div class="card"><div class="result">' + data.reply + '</div>' + stepsHtml + '<div class="meta"><span>' + data.meta + '</span><button class="copy" onclick="navigator.clipboard.writeText(this.closest(\'.card\').querySelector(\'.result\').textContent)">Copy</button></div></div>';
