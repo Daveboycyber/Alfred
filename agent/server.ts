@@ -1,12 +1,12 @@
-// Alfred web interface — persistence + multi-turn
+// Alfred web interface — tool use under policy
 import { createServer } from "node:http";
 import { checkAction, commitAction, Policy, Usage } from "./policy";
 import { callGrok } from "./llm";
 import { load, save, State, HistoryItem } from "./store";
+import { fetchPage } from "./tools";
 
 let state: State = load();
 
-// Daily reset check
 function ensureDaily() {
   const today = new Date().toISOString().slice(0, 10);
   if (state.usage.lastReset !== today) {
@@ -17,11 +17,16 @@ function ensureDaily() {
 }
 ensureDaily();
 
-const TASKS: Record<string, { cost: number; prompt: (t: string, ctx: string) => string; label: string }> = {
+const TASKS: Record<string, { cost: number; prompt: (t: string, ctx: string) => string; label: string; usesTool?: boolean }> = {
+  chat: {
+    cost: 5,
+    label: "Chat",
+    prompt: (t, ctx) => `You are Alfred, a helpful personal agent that works under policy. ${ctx ? "Conversation so far:\n" + ctx + "\n\n" : ""}User: ${t}\n\nReply helpfully and concisely.`,
+  },
   summarize: {
     cost: 6,
     label: "Summarize",
-    prompt: (t, ctx) => `You are Alfred, a personal agent. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Summarize the following in 3 concise bullet points:\n\n${t}`,
+    prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Summarize the following in 3 concise bullet points:\n\n${t}`,
   },
   research: {
     cost: 8,
@@ -43,10 +48,11 @@ const TASKS: Record<string, { cost: number; prompt: (t: string, ctx: string) => 
     label: "Action items",
     prompt: (t, ctx) => `You are Alfred. ${ctx ? "Recent context:\n" + ctx + "\n\n" : ""}Turn the following into a short list of concrete next actions (max 5):\n\n${t}`,
   },
-  chat: {
-    cost: 5,
-    label: "Chat",
-    prompt: (t, ctx) => `You are Alfred, a helpful personal agent that works under policy. ${ctx ? "Conversation so far:\n" + ctx + "\n\n" : ""}User: ${t}\n\nReply helpfully and concisely.`,
+  fetch: {
+    cost: 9,
+    label: "Fetch & Summarize",
+    usesTool: true,
+    prompt: (t, ctx) => `You are Alfred. The user gave a URL or asked about a page. Fetch content is provided below. Summarize the key points in 3-4 bullets and note anything important.\n\n${t}`,
   },
 };
 
@@ -104,7 +110,7 @@ const html = `<!DOCTYPE html>
 <div class="wrap">
   <header>
     <h1><span>Alfred</span></h1>
-    <div class="badge">Sprite + Policy</div>
+    <div class="badge">Sprite + Policy + Tools</div>
   </header>
 
   <div id="frozenBanner" class="frozen-banner">Agent is frozen. Unfreeze to continue.</div>
@@ -132,8 +138,9 @@ const html = `<!DOCTYPE html>
       <button data-task="draft">Draft</button>
       <button data-task="explain">Explain</button>
       <button data-task="actions">Action items</button>
+      <button data-task="fetch">Fetch & Summarize</button>
     </div>
-    <textarea id="topic" placeholder="Talk to Alfred or give it a task..."></textarea>
+    <textarea id="topic" placeholder="Talk to Alfred, give a task, or paste a URL for Fetch & Summarize..."></textarea>
     <div class="row">
       <span class="cost" id="costLabel">Cost: 5</span>
       <button class="primary" id="go">Ask Alfred</button>
@@ -171,7 +178,6 @@ async function refreshStatus() {
   $("frozenBanner").style.display = r.frozen ? "block" : "none";
   $("go").disabled = r.frozen;
 
-  // Render persisted history
   const hist = $("history");
   hist.innerHTML = r.history?.length ? '<h3>Recent</h3>' : '';
   (r.history || []).forEach(h => {
@@ -295,10 +301,19 @@ const server = createServer(async (req, res) => {
     }
 
     try {
-      const ctx = recentContext();
-      const reply = await callGrok(def.prompt(topic, ctx));
+      let promptInput = topic;
 
-      // Update memory
+      // Tool use: fetch page under policy
+      if (def.usesTool) {
+        const urlMatch = topic.match(/https?:\/\/[^\s]+/);
+        const target = urlMatch ? urlMatch[0] : topic.trim();
+        const fetched = await fetchPage(target);
+        promptInput = `URL: ${target}\n\nFetched content:\n${fetched}`;
+      }
+
+      const ctx = recentContext();
+      const reply = await callGrok(def.prompt(promptInput, ctx));
+
       state.messages.push({ role: "user", content: topic });
       state.messages.push({ role: "assistant", content: reply });
 
