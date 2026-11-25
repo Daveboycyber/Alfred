@@ -1,8 +1,9 @@
-// Simple file-based persistence for Alfred
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import type { Policy, Usage } from "./policy";
 
-const FILE = "/tmp/alfred-state.json";
+const FILE = process.env.ALFRED_STATE || join(homedir(), ".alfred", "state.json");
 
 export interface HistoryItem {
   id: string;
@@ -37,8 +38,10 @@ export function load(): State {
 }
 
 export function save(state: State) {
-  // Keep history and messages bounded
   state.history = state.history.slice(0, 40);
   state.messages = state.messages.slice(-20);
-  writeFileSync(FILE, JSON.stringify(state, null, 2));
+  mkdirSync(dirname(FILE), { recursive: true });
+  const tmp = FILE + ".tmp";
+  writeFileSync(tmp, JSON.stringify(state, null, 2));
+  renameSync(tmp, FILE);
 }
