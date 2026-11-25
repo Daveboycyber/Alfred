@@ -1,33 +1,43 @@
 # Alfred
 
-**Personal agent on a Fly.io Sprite that does useful work under policy.**
+**Connectors grant broad access. Alfred is the leash.**
+
+A personal agent on a Fly.io Sprite. Policy gates every spend and tool call. Credentials never live on the Sprite.
 
 Built for [Hacksgiving 2026](https://fly.io/hacksgiving/).
 
-## What it is
+## Live
 
-Alfred is a personal agent that lives on a [Fly.io Sprite](https://fly.io/sprites). It performs useful work (summarization, research, light automation) while a lightweight, chain-agnostic policy layer enforces limits (single-action cost, daily budget, freeze).
+https://alfred-b6vev.sprites.app
 
-It uses a Sprites **Custom API connector** to call Grok (xAI) so the agent can reason without the Sprite holding credentials.
+## Safety model
 
-## Demo path
+- Policy checked before every model call and tool use. A blocked agent makes zero model calls.
+- SSRF guards: DNS resolution + private/loopback/metadata/internal host blocks before every fetch.
+- Admin endpoints require `ALFRED_TOKEN` (timing-safe compare). `/ask` is public but rate-limited and budget-bounded.
+- Tool output wrapped as untrusted. UI escapes all interpolated text and renders markdown after escaping.
+- Atomic state writes to `~/.alfred/state.json`.
 
-Running the agent shows:
-1. **Useful work under policy** — Grok summarizes a topic (allowed).
-2. **Policy block** — An oversized action is rejected with a clear reason.
-
-## Run on Sprite
+## Run
 
 ```bash
-sprite exec -s alfred -- bash -c "cd Alfred && npm install && npm start"
+npm run web
 ```
 
-## Hackathon requirements
+On a Sprite:
+
+```bash
+sprite exec -s alfred -- bash -c "cd Alfred && npm run web"
+```
+
+Set `ALFRED_TOKEN` before the demo.
+
+## Config
+
+See `.env.example`.
+
+## Hackathon
 
 - Runs on a Sprite
-- Uses ≥1 Sprites connector (xAI Custom API)
-- Built during Hacksgiving week (Nov 23–29, 2026)
-
-## License
-
-MIT
+- Uses a Sprites Custom API connector (xAI/Grok)
+- Built during Nov 23–29, 2026
