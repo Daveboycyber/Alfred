@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alfred</title>
+<meta name="description" content="Alfred: a personal agent under policy on a Fly.io Sprite.">
+<style>
+:root {
+  --baize: #12201a;
+  --brass: #c4a05a;
+  --cream: #efe7d2;
+  --ink: #2a2418;
+  --muted: #6b6254;
+  --danger: #b33;
+  --ok: #2a5;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--baize); color: var(--cream); font-family: Georgia, Palatino, "Iowan Old Style", serif; }
+.page { max-width: 820px; margin: 0 auto; padding: 24px 16px 60px; }
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.wordmark { font-size: 32px; letter-spacing: -0.5px; }
+.wordmark span { color: var(--brass); }
+.tag { font-size: 13px; color: var(--brass); opacity: 0.8; }
+.controls { display: flex; gap: 10px; align-items: center; }
+button, select, textarea, input { font-family: inherit; }
+.switch { background: #1e2e26; border: 1px solid var(--brass); color: var(--cream); border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+.switch[aria-checked="true"] { background: var(--danger); border-color: var(--danger); }
+.ledger { background: #1a2a22; border: 1px solid #2a3a32; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.ledger b { font-variant-numeric: tabular-nums; font-size: 22px; }
+.meter { height: 8px; background: #2a3a32; border-radius: 4px; margin: 8px 0; overflow: hidden; }
+.meter > div { height: 100%; background: var(--ok); width: 0%; transition: width .3s; }
+.meter.warn > div { background: #c80; }
+.meter.hot > div { background: var(--danger); }
+.composer { background: #1a2a22; border: 1px solid #2a3a32; border-radius: 14px; padding: 16px; }
+textarea { width: 100%; min-height: 92px; max-height: 320px; background: #0e1814; color: var(--cream); border: 1px solid #2a3a32; border-radius: 8px; padding: 12px; resize: none; }
+textarea:focus { outline: 2px solid var(--brass); }
+.row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; gap: 12px; }
+select { background: #0e1814; color: var(--cream); border: 1px solid #2a3a32; border-radius: 8px; padding: 8px 10px; }
+.primary { background: var(--brass); color: var(--ink); border: none; border-radius: 8px; padding: 10px 20px; font-weight: 600; cursor: pointer; }
+.primary:disabled { opacity: 0.45; cursor: not-allowed; }
+.note { background: var(--cream); color: var(--ink); border-radius: 10px; padding: 18px; margin-top: 16px; border-top: 3px solid var(--brass); }
+.note .q { font-style: italic; color: var(--muted); margin-bottom: 10px; }
+.note .result { white-space: pre-wrap; line-height: 1.5; }
+.meta { font-size: 13px; color: var(--muted); margin-top: 12px; display: flex; justify-content: space-between; }
+.steps { margin-top: 14px; border-left: 2px solid #ddd; padding-left: 14px; }
+.step { margin-bottom: 10px; font-size: 14px; }
+.pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; margin-right: 6px; }
+.pill.ok { background: #d4edda; color: #155724; }
+.pill.bad { background: #f8d7da; color: #721c24; }
+.frozen { background: #3a1a1a; color: #f88; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; display: none; }
+dialog { border: none; border-radius: 12px; padding: 20px; max-width: 420px; background: var(--cream); color: var(--ink); }
+dialog::backdrop { background: rgba(0,0,0,.5); }
+.history { margin-top: 24px; }
+.item { background: #1a2a22; border: 1px solid #2a3a32; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; cursor: pointer; font-size: 14px; }
+.item:hover { border-color: var(--brass); }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <div>
+      <div class="wordmark"><span>Alfred</span></div>
+      <div class="tag">A personal agent under policy</div>
+    </div>
+    <div class="controls">
+      <button class="switch" id="freezeBtn" role="switch" aria-checked="false" type="button">Freeze</button>
+      <button id="policyBtn" type="button">Policy</button>
+    </div>
+  </header>
+
+  <div id="frozenBanner" class="frozen">Alfred is frozen. Unfreeze to continue.</div>
+
+  <div class="ledger">
+    Spent today: <b id="spent">0</b> of <b id="daily">50</b>
+    <div class="meter" id="meter" role="progressbar"><div id="bar"></div></div>
+    <div style="font-size:13px;color:#aaa">Each action is capped. <span id="left">50</span> left today.</div>
+  </div>
+
+  <div class="composer">
+    <textarea id="topic" placeholder="What shall I do, sir?"></textarea>
+    <div class="row">
+      <div>
+        <select id="mode">
+          <option value="agent">Agent</option>
+          <option value="chat">Chat</option>
+          <option value="summarize">Summarize</option>
+          <option value="research">Research</option>
+          <option value="draft">Draft</option>
+          <option value="explain">Explain</option>
+          <option value="actions">Next actions</option>
+          <option value="fetch">Read a web page</option>
+        </select>
+        <span id="costLabel" style="margin-left:10px;font-size:13px;color:#aaa">Cost ~8+</span>
+      </div>
+      <button class="primary" id="go" type="button">Run Alfred</button>
+    </div>
+  </div>
+
+  <div id="out"></div>
+  <div class="history" id="history"></div>
+</div>
+
+<dialog id="policyDialog">
+  <form method="dialog">
+    <h3 style="margin-top:0">Policy</h3>
+    <label>Most Alfred may spend on one action<br><input id="maxSingle" type="number" min="1" style="width:100%;margin:6px 0"></label>
+    <label>Daily budget<br><input id="maxDaily" type="number" min="1" style="width:100%;margin:6px 0"></label>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button type="submit" id="saveLimits">Save</button>
+      <button type="button" id="resetBtn">Reset spend</button>
+      <button type="button" id="clearHistory">Clear history</button>
+      <button type="button" onclick="this.closest('dialog').close()">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+function esc(s) {
+  return String(s ?? "").replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">").replace(/"/g, """);
+}
+function md(raw) {
+  const safe = esc(raw);
+  return safe
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/`(.+?)`/g, "<code>$1</code>")
+    .replace(/\n/g, "<br>");
+}
+function $(id) { return document.getElementById(id); }
+let current = "agent";
+const costs = { agent: 8, chat: 5, summarize: 6, research: 8, draft: 9, explain: 7, actions: 7, fetch: 9 };
+
+$("mode").onchange = () => {
+  current = $("mode").value;
+  $("costLabel").textContent = current === "agent" ? "Cost ~8+" : "Cost " + costs[current];
+};
+
+async function post(path, body) {
+  const token = localStorage.getItem("alfred-token") || "";
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers["x-alfred-token"] = token;
+  const res = await fetch(path, { method: "POST", headers, body: body ? JSON.stringify(body) : undefined });
+  if (res.status === 401 && !token) {
+    const t = prompt("Admin token?");
+    if (t) { localStorage.setItem("alfred-token", t); return post(path, body); }
+  }
+  return res;
+}
+
+async function refresh() {
+  const r = await fetch("/status").then(r => r.json());
+  $("spent").textContent = r.spentToday;
+  $("daily").textContent = r.maxDaily;
+  const pct = Math.min(100, (r.spentToday / r.maxDaily) * 100);
+  $("bar").style.width = pct + "%";
+  $("meter").className = "meter" + (pct > 90 ? " hot" : pct > 70 ? " warn" : "");
+  $("left").textContent = Math.max(0, r.maxDaily - r.spentToday);
+  $("maxSingle").value = r.maxSingle;
+  $("maxDaily").value = r.maxDaily;
+  $("freezeBtn").textContent = r.frozen ? "Unfreeze" : "Freeze";
+  $("freezeBtn").setAttribute("aria-checked", r.frozen);
+  $("frozenBanner").style.display = r.frozen ? "block" : "none";
+  $("go").disabled = r.frozen;
+
+  const hist = $("history");
+  hist.innerHTML = r.history?.length ? "<h3 style='font-size:14px;color:#aaa'>Recent</h3>" : "";
+  (r.history || []).forEach(h => {
+    const div = document.createElement("div");
+    div.className = "item";
+    div.innerHTML = esc(h.task) + ": " + esc((h.topic || "").slice(0, 80));
+    div.onclick = () => showNote(h.topic, h.reply, h.task);
+    hist.appendChild(div);
+  });
+}
+
+function showNote(topic, reply, meta) {
+  $("out").innerHTML = '<div class="note"><div class="q">' + esc(topic) + '</div><div class="result">' + md(reply) + '</div><div class="meta"><span>' + esc(meta) + '</span><button class="copy" type="button">Copy</button></div></div>';
+  $("out").querySelector(".copy").onclick = () => navigator.clipboard.writeText(reply);
+}
+
+$("go").onclick = async () => {
+  const topic = $("topic").value.trim();
+  if (!topic) return;
+  $("go").disabled = true;
+  $("out").innerHTML = '<div class="note"><div class="meta">Alfred is on it...</div></div>';
+  try {
+    const res = await post("/ask", { task: current, topic });
+    const data = await res.json();
+    if (data.error) {
+      $("out").innerHTML = '<div class="note" style="border-left:4px solid var(--danger)"><div class="result">' + esc(data.error) + '</div></div>';
+    } else {
+      let steps = "";
+      if (data.steps) {
+        steps = '<div class="steps">' + data.steps.map(s => {
+          const pill = s.thought?.startsWith("Policy blocked") ? '<span class="pill bad">Declined</span>' : (s.tool ? '<span class="pill ok">Allowed</span>' : '<span class="pill ok">Done</span>');
+          return '<div class="step">' + pill + esc(s.thought || "") + (s.tool ? " · " + esc(s.tool) + "(" + esc(s.toolInput || "") + ")" : "") + '</div>';
+        }).join("") + '</div>';
+      }
+      $("out").innerHTML = '<div class="note"><div class="q">' + esc(topic) + '</div><div class="result">' + md(data.reply) + '</div>' + steps + '<div class="meta"><span>' + esc(data.meta || "") + '</span><button class="copy" type="button">Copy</button></div></div>';
+      $("out").querySelector(".copy").onclick = () => navigator.clipboard.writeText(data.reply);
+      $("topic").value = "";
+    }
+  } catch {
+    $("out").innerHTML = '<div class="note"><div class="result">Can\'t reach Alfred.</div></div>';
+  }
+  refresh();
+};
+
+$("freezeBtn").onclick = async () => { await post("/freeze"); refresh(); };
+$("policyBtn").onclick = () => $("policyDialog").showModal();
+$("saveLimits").onclick = async (e) => {
+  e.preventDefault();
+  await post("/limits", { maxSingle: +$("maxSingle").value, maxDaily: +$("maxDaily").value });
+  $("policyDialog").close();
+  refresh();
+};
+$("resetBtn").onclick = async () => { await post("/reset"); refresh(); };
+$("clearHistory").onclick = async () => { if (confirm("Clear history?")) { await post("/clear-history"); refresh(); } };
+
+refresh();
+</script>
+</body>
+</html>
