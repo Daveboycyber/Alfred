@@ -1,11 +1,13 @@
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
-import { checkAction, commitAction } from "./policy";
+import { checkAction, checkTool, commitAction } from "./policy";
 import { callGrok } from "./llm";
 import { load, save, State, HistoryItem } from "./store";
-import { fetchPage } from "./tools";
+import { fetchPage, webSearch, calculate } from "./tools";
+import { boxRead, boxWrite } from "./box";
 import { runAgentLoop } from "./agent";
+import { getApproval, listApprovals, resolveApproval } from "./approvals";
 
 let state: State = load();
 
@@ -25,7 +27,7 @@ if (!TOKEN) console.warn("WARNING: ALFRED_TOKEN not set. Admin endpoints are ope
 function checkToken(req: any): boolean {
   if (!TOKEN) return true;
   const got = req.headers["x-alfred-token"] || "";
-  if (got.length !== TOKEN.length) return false;
+  if (typeof got !== "string" || got.length !== TOKEN.length) return false;
   return timingSafeEqual(Buffer.from(got), Buffer.from(TOKEN));
 }
 
@@ -75,6 +77,21 @@ function headers(extra: Record<string, string> = {}) {
   };
 }
 
+async function runApprovedTool(tool: string, input: string): Promise<string> {
+  const gate = checkTool(tool, input);
+  if (!gate.allowed) return `Policy blocked: ${gate.reason}`;
+  if (tool === "fetch") return fetchPage(input);
+  if (tool === "search") return webSearch(input);
+  if (tool === "calculate") return calculate(input);
+  if (tool === "box_read") return boxRead(input.trim());
+  if (tool === "box_write") {
+    const name = "alfred-note.txt";
+    const content = input.includes(" ") ? input.slice(input.indexOf(" ") + 1) : input;
+    return boxWrite(name, content);
+  }
+  return `Unknown tool ${tool}`;
+}
+
 const server = createServer(async (req, res) => {
   ensureDaily();
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
@@ -99,7 +116,48 @@ const server = createServer(async (req, res) => {
       frozen: state.policy.frozen,
       adminProtected: !!TOKEN,
       history: state.history.slice(0, 12),
+      approvals: listApprovals().filter(a => a.status === "pending").length,
     }));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/approvals") {
+    res.writeHead(200, headers());
+    res.end(JSON.stringify({ approvals: listApprovals() }));
+    return;
+  }
+
+  const approvalMatch = url.pathname.match(/^\/approvals\/([^/]+)\/(approve|deny)$/);
+  if (req.method === "POST" && approvalMatch) {
+    if (!checkToken(req)) {
+      res.writeHead(401, headers());
+      res.end(JSON.stringify({ error: "Admin token required" }));
+      return;
+    }
+    const id = decodeURIComponent(approvalMatch[1]);
+    const verb = approvalMatch[2];
+    const item = getApproval(id);
+    if (!item || item.status !== "pending") {
+      res.writeHead(404, headers());
+      res.end(JSON.stringify({ error: "No pending approval" }));
+      return;
+    }
+    if (verb === "deny") {
+      resolveApproval(id, false);
+      res.writeHead(200, headers());
+      res.end(JSON.stringify({ ok: true, status: "denied" }));
+      return;
+    }
+    try {
+      const output = await exclusive(() => runApprovedTool(item.tool, item.args.input || ""));
+      resolveApproval(id, true, output);
+      res.writeHead(200, headers());
+      res.end(JSON.stringify({ ok: true, status: "approved", output }));
+    } catch (err: any) {
+      const output = `Tool error: ${err.message || err}`;
+      resolveApproval(id, true, output);
+      res.writeHead(200, headers());
+      res.end(JSON.stringify({ ok: true, status: "approved", output }));
+    }
     return;
   }
 
@@ -184,11 +242,15 @@ const server = createServer(async (req, res) => {
         let reply = "";
         let meta = "";
         let steps: any[] | undefined;
+        let status = "ok";
+        let approvalId: string | undefined;
 
         if (def.agent) {
           const r = await runAgentLoop(cleanTopic, state.policy, state.usage);
           reply = r.final;
           steps = r.steps;
+          status = r.status;
+          approvalId = r.approvalId;
           state.usage = commitAction(state.usage, r.totalCost);
           meta = `Agent · cost ${r.totalCost} · spent ${state.usage.spentToday}/${state.policy.maxDaily}`;
         } else {
@@ -212,7 +274,7 @@ const server = createServer(async (req, res) => {
         const item: HistoryItem = { id: Date.now().toString(36), task: def.label, topic: cleanTopic, reply, ts: Date.now() };
         state.history.unshift(item);
         save(state);
-        return { reply, meta, steps };
+        return { reply, meta, steps, status, approvalId };
       });
 
       res.writeHead(200, headers());
