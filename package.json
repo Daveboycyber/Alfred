@@ -6,8 +6,11 @@
   "scripts": {
     "start": "tsx agent/index.ts",
     "web": "tsx agent/server.ts",
-    "dev": "tsx watch agent/index.ts"
+    "dev": "tsx watch agent/server.ts",
+    "test": "node --import tsx --test agent/*.test.ts",
+    "typecheck": "tsc -p ."
   },
+  "engines": { "node": ">=20" },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "tsx": "^4.20.0",
