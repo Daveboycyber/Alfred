@@ -183,7 +183,7 @@ async function refreshStatus() {
     (r.history || []).forEach(h => {
       const div = document.createElement("div");
       div.className = "item";
-      div.innerHTML = "<div class=\"q\">" + h.task + ": " + (h.topic || "").slice(0, 90) + "</div><div>" + (h.reply || "").slice(0, 180) + "</div>";
+      div.innerHTML = "<div class=\\\"q\\\">" + h.task + ": " + (h.topic || "").slice(0, 90) + "</div><div>" + (h.reply || "").slice(0, 180) + "</div>";
       hist.appendChild(div);
     });
   } catch (e) { console.error(e); }
