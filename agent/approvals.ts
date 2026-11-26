@@ -1,7 +1,17 @@
 /**
  * Approval queue: risky tool calls pause instead of running.
- * In-memory for the single server process.
+ * In-memory for the single server process. Stores enough state
+ * to resume the agent loop after the human approves.
  */
+
+export interface StepSnapshot {
+  thought: string;
+  tool?: string;
+  toolInput?: string;
+  toolOutput?: string;
+  final?: string;
+  needsApproval?: boolean;
+}
 
 export interface PendingAction {
   id: string;
@@ -12,13 +22,44 @@ export interface PendingAction {
   goal: string;
   status: "pending" | "approved" | "denied";
   output?: string;
+  /** Context string so far (goal + prior tool results) */
+  context?: string;
+  /** Cost already committed before the pause */
+  totalCost?: number;
+  /** Steps already taken */
+  steps?: StepSnapshot[];
+  /** Remaining max steps after resume */
+  maxStepsLeft?: number;
 }
 
 const pending = new Map<string, PendingAction>();
 
-export function createApproval(tool: string, args: Record<string, string>, reason: string, goal = ""): PendingAction {
+export function createApproval(
+  tool: string,
+  args: Record<string, string>,
+  reason: string,
+  goal = "",
+  resume?: {
+    context: string;
+    totalCost: number;
+    steps: StepSnapshot[];
+    maxStepsLeft: number;
+  }
+): PendingAction {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  const item: PendingAction = { id, tool, args, reason, createdAt: Date.now(), goal, status: "pending" };
+  const item: PendingAction = {
+    id,
+    tool,
+    args,
+    reason,
+    createdAt: Date.now(),
+    goal,
+    status: "pending",
+    context: resume?.context,
+    totalCost: resume?.totalCost,
+    steps: resume?.steps,
+    maxStepsLeft: resume?.maxStepsLeft,
+  };
   pending.set(id, item);
   return item;
 }

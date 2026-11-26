@@ -1,7 +1,7 @@
 import { callGrok } from "./llm";
 import { fetchPage, webSearch, calculate } from "./tools";
 import { checkAction, checkTool, Policy, Usage } from "./policy";
-import { createApproval } from "./approvals";
+import { createApproval, PendingAction } from "./approvals";
 
 export interface StepResult {
   thought: string;
@@ -26,23 +26,68 @@ export const SYNTH_COST = 5;
 const wrap = (tool: string, out: string) =>
   `<tool_result tool="${tool}" trust="untrusted">\n${out.replace(/<\/?tool_result[^>]*>/gi, "")}\n</tool_result>`;
 
-export async function runAgentLoop(
+/**
+ * Continue the agent loop after a human approved a risky tool.
+ * Injects the tool output into context and keeps planning until FINAL or budget stops it.
+ */
+export async function resumeAgentLoop(
+  item: PendingAction,
+  toolOutput: string,
+  policy: Policy,
+  usage: Usage
+): Promise<AgentResult> {
+  const goal = item.goal || "continue";
+  const steps: StepResult[] = [...(item.steps || [])];
+  // Mark the last needsApproval step with the actual output
+  const last = steps[steps.length - 1];
+  if (last?.needsApproval) {
+    last.toolOutput = toolOutput.slice(0, 500);
+    last.needsApproval = false;
+    last.thought = (last.thought || "Approved") + " — ran";
+  } else {
+    steps.push({
+      thought: "Approved tool ran",
+      tool: item.tool,
+      toolInput: item.args.input,
+      toolOutput: toolOutput.slice(0, 500),
+    });
+  }
+
+  let context =
+    item.context ||
+    `Goal: ${goal}\n\n${wrap(item.tool, toolOutput.slice(0, 1500))}`;
+  if (item.context) {
+    context = item.context + `\n\n${wrap(item.tool, toolOutput.slice(0, 1500))}`;
+  }
+  let totalCost = item.totalCost ?? 0;
+  let lastTool = toolOutput;
+  const maxSteps = Math.max(1, item.maxStepsLeft ?? 2);
+
+  return continueLoop(goal, policy, usage, steps, context, totalCost, lastTool, maxSteps);
+}
+
+async function continueLoop(
   goal: string,
   policy: Policy,
   usage: Usage,
-  maxSteps = 3
+  steps: StepResult[],
+  context: string,
+  totalCost: number,
+  lastTool: string,
+  maxSteps: number
 ): Promise<AgentResult> {
-  const steps: StepResult[] = [];
-  let context = `Goal: ${goal}`;
-  let totalCost = 0;
-  let lastTool = "";
   const gate = (cost: number) =>
     checkAction(policy, { ...usage, spentToday: usage.spentToday + totalCost }, cost);
 
   const stopped = (reason: string): AgentResult => {
     steps.push({ thought: `Policy blocked further steps: ${reason}` });
     const partial = lastTool ? `\n\nWhat I had found so far:\n${lastTool.slice(0, 500)}` : "";
-    return { steps, final: `I stopped because of the policy: ${reason}.${partial}`, totalCost, status: "stopped" };
+    return {
+      steps,
+      final: `I stopped because of the policy: ${reason}.${partial}`,
+      totalCost,
+      status: "stopped",
+    };
   };
 
   for (let i = 0; i < maxSteps; i++) {
@@ -87,7 +132,11 @@ Be concise.`;
     const toolGate = checkTool(tool, input);
 
     if (!toolGate.allowed) {
-      steps.push({ thought: `Policy blocked further steps: ${toolGate.reason}`, tool, toolInput: input });
+      steps.push({
+        thought: `Policy blocked further steps: ${toolGate.reason}`,
+        tool,
+        toolInput: input,
+      });
       return {
         steps,
         final: `I stopped because of the policy: ${toolGate.reason}.`,
@@ -97,13 +146,34 @@ Be concise.`;
     }
 
     if (toolGate.needsApproval) {
-      const item = createApproval(tool, { input }, `Risky tool ${tool} needs approval`, goal);
+      const remaining = maxSteps - i - 1;
+      const item = createApproval(
+        tool,
+        { input },
+        `Risky tool ${tool} needs approval`,
+        goal,
+        {
+          context,
+          totalCost,
+          steps: steps.map((s) => ({ ...s })),
+          maxStepsLeft: Math.max(1, remaining),
+        }
+      );
       steps.push({
         thought: thought || `Shall I proceed with ${tool}?`,
         tool,
         toolInput: input,
         needsApproval: true,
       });
+      // Also attach the pending step to the stored approval
+      const stored = item.steps || [];
+      stored.push({
+        thought: thought || `Shall I proceed with ${tool}?`,
+        tool,
+        toolInput: input,
+        needsApproval: true,
+      });
+      item.steps = stored;
       return {
         steps,
         final: `Shall I proceed with ${tool} (${input})?`,
@@ -137,4 +207,13 @@ Be concise.`;
   totalCost += SYNTH_COST;
   steps.push({ thought: "Ready to answer", final: synth });
   return { steps, final: synth, totalCost, status: "ok" };
+}
+
+export async function runAgentLoop(
+  goal: string,
+  policy: Policy,
+  usage: Usage,
+  maxSteps = 3
+): Promise<AgentResult> {
+  return continueLoop(goal, policy, usage, [], `Goal: ${goal}`, 0, "", maxSteps);
 }
