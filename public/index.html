@@ -189,9 +189,27 @@ function wireApproval(id) {
   $("approveBtn").onclick = async () => {
     $("approveBtn").disabled = true;
     $("denyBtn").disabled = true;
-    const res = await post("/approvals/" + encodeURIComponent(id) + "/approve");
-    const data = await res.json();
-    box.textContent = data.output || data.error || data.status || "";
+    box.textContent = "Running tool and finishing answer...";
+    try {
+      const res = await post("/approvals/" + encodeURIComponent(id) + "/approve");
+      const data = await res.json();
+      if (data.error) {
+        box.textContent = data.error;
+        return;
+      }
+      if (data.status === "needs_approval" && data.approvalId) {
+        $("out").innerHTML = '<div class="note" style="border-left:4px solid var(--brass)"><div class="result">' + md(data.reply || "Another approval needed.") + '</div>' + stepHtml(data.steps) + '<div class="approve-row"><button id="approveBtn" type="button">Approve</button><button id="denyBtn" type="button">Deny</button></div><div id="approvalOut" class="outbox"></div><div class="meta"><span>' + esc(data.meta || "") + '</span></div></div>';
+        wireApproval(data.approvalId);
+        return;
+      }
+      const border = data.status === "stopped" ? ' style="border-left:4px solid var(--danger)"' : "";
+      $("out").innerHTML = '<div class="note"' + border + '><div class="result">' + md(data.reply || data.output || "") + '</div>' + stepHtml(data.steps) + '<div class="meta"><span>' + esc(data.meta || "Approved") + '</span><button class="copy" type="button">Copy</button></div></div>';
+      const copy = $("out").querySelector(".copy");
+      if (copy) copy.onclick = () => navigator.clipboard.writeText(data.reply || data.output || "");
+      refresh();
+    } catch (e) {
+      box.textContent = "Approve failed: " + (e.message || e);
+    }
   };
   $("denyBtn").onclick = async () => {
     $("approveBtn").disabled = true;
