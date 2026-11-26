@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { runAgentLoop } from "./agent";
+import { runAgentLoop, resumeAgentLoop } from "./agent";
 import { getApproval } from "./approvals";
 import type { Policy, Usage } from "./policy";
 
@@ -90,4 +90,26 @@ test("box write outside the outbox is declined", async () => {
   assert.equal(r.approvalId, undefined);
   assert.match(r.steps.at(-1)?.thought ?? "", /Policy blocked/);
   assert.match(r.final, /outbox/);
+});
+
+test("resume after approve continues to FINAL", async () => {
+  mockDecision(() => "FINAL: The page says hello");
+  const { createApproval } = await import("./approvals");
+  const item = createApproval(
+    "fetch",
+    { input: "https://example.com" },
+    "test",
+    "read the page",
+    {
+      context: "Goal: read the page",
+      totalCost: 6,
+      steps: [{ thought: "Shall I fetch?", tool: "fetch", toolInput: "https://example.com", needsApproval: true }],
+      maxStepsLeft: 2,
+    }
+  );
+  const r = await resumeAgentLoop(item, "Hello from example.com", ok, usage);
+  assert.equal(r.status, "ok");
+  assert.match(r.final, /hello/i);
+  assert.ok(r.totalCost >= 6);
+  assert.ok(r.steps.some(s => s.toolOutput && s.toolOutput.includes("Hello")));
 });
