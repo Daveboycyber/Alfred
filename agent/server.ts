@@ -6,7 +6,7 @@ import { callGrok } from "./llm";
 import { load, save, State, HistoryItem } from "./store";
 import { fetchPage, webSearch, calculate } from "./tools";
 import { boxRead, boxWrite } from "./box";
-import { runAgentLoop } from "./agent";
+import { runAgentLoop, resumeAgentLoop } from "./agent";
 import { getApproval, listApprovals, resolveApproval } from "./approvals";
 
 let state: State = load();
@@ -148,15 +148,44 @@ const server = createServer(async (req, res) => {
       return;
     }
     try {
-      const output = await exclusive(() => runApprovedTool(item.tool, item.args.input || ""));
-      resolveApproval(id, true, output);
+      const result = await exclusive(async () => {
+        let output: string;
+        try {
+          output = await runApprovedTool(item.tool, item.args.input || "");
+        } catch (err: any) {
+          output = `Tool error: ${err.message || err}`;
+        }
+        resolveApproval(id, true, output);
+
+        // Resume the agent loop with the tool result so Alfred finishes the answer.
+        const resumed = await resumeAgentLoop(item, output, state.policy, state.usage);
+        state.usage = commitAction(state.usage, resumed.totalCost - (item.totalCost || 0));
+        const histItem: HistoryItem = {
+          id: Date.now().toString(36),
+          task: "Agent",
+          topic: item.goal || item.args.input || "approved tool",
+          reply: resumed.final,
+          ts: Date.now(),
+        };
+        state.history.unshift(histItem);
+        state.messages.push({ role: "user", content: `[approved ${item.tool}] ${item.args.input || ""}` });
+        state.messages.push({ role: "assistant", content: resumed.final });
+        save(state);
+        return {
+          ok: true,
+          status: resumed.status,
+          output,
+          reply: resumed.final,
+          steps: resumed.steps,
+          approvalId: resumed.approvalId,
+          meta: `Agent · resumed · cost ${resumed.totalCost} · spent ${state.usage.spentToday}/${state.policy.maxDaily}`,
+        };
+      });
       res.writeHead(200, headers());
-      res.end(JSON.stringify({ ok: true, status: "approved", output }));
+      res.end(JSON.stringify(result));
     } catch (err: any) {
-      const output = `Tool error: ${err.message || err}`;
-      resolveApproval(id, true, output);
-      res.writeHead(200, headers());
-      res.end(JSON.stringify({ ok: true, status: "approved", output }));
+      res.writeHead(500, headers());
+      res.end(JSON.stringify({ error: err.message || String(err) }));
     }
     return;
   }
