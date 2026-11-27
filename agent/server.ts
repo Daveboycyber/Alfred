@@ -4,10 +4,10 @@ import { timingSafeEqual } from "node:crypto";
 import { checkAction, checkTool, commitAction } from "./policy";
 import { callGrok } from "./llm";
 import { load, save, State, HistoryItem } from "./store";
-import { fetchPage, webSearch, calculate } from "./tools";
+import { fetchPage, webSearch, calculate, assertPublicUrl } from "./tools";
 import { boxRead, boxWrite } from "./box";
 import { runAgentLoop, resumeAgentLoop } from "./agent";
-import { getApproval, listApprovals, resolveApproval } from "./approvals";
+import { createApproval, getApproval, listApprovals, resolveApproval } from "./approvals";
 
 let state: State = load();
 
@@ -269,6 +269,60 @@ const server = createServer(async (req, res) => {
     });
     res.writeHead(200, headers());
     res.end(JSON.stringify({ maxSingle: state.policy.maxSingle, maxDaily: state.policy.maxDaily }));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/demo/block") {
+    if (!checkToken(req)) {
+      res.writeHead(401, headers());
+      res.end(JSON.stringify({ error: "Admin token required" }));
+      return;
+    }
+    const target = "http://127.0.0.1/secret";
+    let reason = "blocked";
+    try {
+      await assertPublicUrl(target);
+      reason = "unexpectedly allowed";
+    } catch (err: any) {
+      reason = err.message || "blocked";
+    }
+    res.writeHead(200, headers());
+    res.end(JSON.stringify({
+      reply: `I stopped because of the policy: ${reason}. No model was called.`,
+      steps: [{ thought: `Policy blocked: ${reason}`, tool: "fetch", toolInput: target }],
+      status: "stopped",
+      meta: "Demo · private URL declined · 0 model calls · cost 0",
+    }));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/demo/approval") {
+    if (!checkToken(req)) {
+      res.writeHead(401, headers());
+      res.end(JSON.stringify({ error: "Admin token required" }));
+      return;
+    }
+    const item = createApproval(
+      "fetch",
+      { input: "https://example.com" },
+      "Risky tool fetch needs approval",
+      "Read example.com",
+      { context: "Goal: Read example.com", totalCost: 0, steps: [], maxStepsLeft: 2 }
+    );
+    item.steps = [{
+      thought: "Shall I proceed with fetch?",
+      tool: "fetch",
+      toolInput: "https://example.com",
+      needsApproval: true,
+    }];
+    res.writeHead(200, headers());
+    res.end(JSON.stringify({
+      reply: "Shall I proceed with fetch (https://example.com)?",
+      steps: item.steps,
+      status: "needs_approval",
+      approvalId: item.id,
+      meta: "Demo · waiting for approval · 0 model calls",
+    }));
     return;
   }
 

@@ -58,6 +58,12 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 .history { margin-top: 24px; }
 .item { background: #1a2a22; border: 1px solid #2a3a32; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; cursor: pointer; font-size: 14px; }
 .item:hover { border-color: var(--brass); }
+.demo { background: #1a2a22; border: 1px dashed #3a4a42; border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
+.demo h3 { margin: 0 0 4px; font-size: 14px; color: var(--brass); font-weight: 600; }
+.demo p { margin: 0 0 10px; font-size: 13px; color: #aaa; }
+.demo-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.demo button { background: #0e1814; color: var(--cream); border: 1px solid var(--brass); border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 13px; }
+.demo button:hover { background: #243830; }
 </style>
 </head>
 <body>
@@ -79,6 +85,16 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
     Spent today: <b id="spent">0</b> of <b id="daily">50</b>
     <div class="meter" id="meter" role="progressbar"><div id="bar"></div></div>
     <div style="font-size:13px;color:#aaa">Each action is capped. <span id="left">50</span> left today.</div>
+  </div>
+
+  <div class="demo">
+    <h3>Try the leash</h3>
+    <p>Three real policy checks. None of them call the model.</p>
+    <div class="demo-row">
+      <button type="button" id="demoFreeze">1. Freeze</button>
+      <button type="button" id="demoBlock">2. Block a private URL</button>
+      <button type="button" id="demoApprove">3. Approval card</button>
+    </div>
   </div>
 
   <div class="composer">
@@ -171,11 +187,14 @@ async function post(path, body) {
 function stepHtml(steps) {
   if (!steps || !steps.length) return "";
   return '<div class="steps">' + steps.map(s => {
+    const blocked = s.thought && s.thought.indexOf("Policy blocked") === 0;
     const pill = s.needsApproval ? '<span class="pill wait">Waiting</span>'
-      : (s.thought && s.thought.indexOf("Policy blocked") === 0) ? '<span class="pill bad">Declined</span>'
+      : blocked ? '<span class="pill bad">Declined</span>'
       : s.tool ? '<span class="pill ok">Allowed</span>'
       : '<span class="pill ok">Done</span>';
-    return '<div class="step">' + pill + esc(s.thought || "") + (s.tool ? " · " + esc(s.tool) + "(" + esc(s.toolInput || "") + ")" : "") + '</div>';
+    const reason = blocked ? s.thought.replace(/^Policy blocked:\s*/, "") : (s.thought || "");
+    const tool = s.tool ? esc(s.tool) + "(" + esc(s.toolInput || "") + ")" : "";
+    return '<div class="step">' + pill + (tool ? " " + tool : "") + (reason ? " — " + esc(reason) : "") + '</div>';
   }).join("") + '</div>';
 }
 
@@ -280,6 +299,42 @@ $("saveLimits").onclick = async (e) => {
 };
 $("resetBtn").onclick = async () => { await post("/reset"); refresh(); };
 $("clearHistory").onclick = async () => { if (confirm("Clear history?")) { await post("/clear-history"); refresh(); } };
+
+function showDemo(data, danger) {
+  const border = danger || data.status === "stopped" ? ' style="border-left:4px solid var(--danger)"' : "";
+  $("out").innerHTML = '<div class="note"' + border + '><div class="result">' + md(data.reply || "") + '</div>' + stepHtml(data.steps) + '<div class="meta"><span>' + esc(data.meta || "Demo · 0 model calls") + '</span></div></div>';
+}
+
+$("demoFreeze").onclick = async () => {
+  const res = await post("/freeze");
+  const data = await res.json();
+  refresh();
+  if (data.error) { showDemo({ reply: data.error }, true); return; }
+  const frozen = data.frozen;
+  showDemo({
+    reply: frozen
+      ? "Frozen. The next ask makes 0 model calls and costs 0."
+      : "Unfrozen. Alfred will spend again on the next ask.",
+    steps: [{ thought: frozen ? "Policy blocked: Agent is frozen" : "Done" }],
+    status: frozen ? "stopped" : "ok",
+    meta: "Demo · freeze · 0 model calls",
+  }, frozen);
+};
+
+$("demoBlock").onclick = async () => {
+  const res = await post("/demo/block");
+  const data = await res.json();
+  if (data.error) { showDemo({ reply: data.error }, true); return; }
+  showDemo(data, true);
+};
+
+$("demoApprove").onclick = async () => {
+  const res = await post("/demo/approval");
+  const data = await res.json();
+  if (data.error) { showDemo({ reply: data.error }, true); return; }
+  $("out").innerHTML = '<div class="note" style="border-left:4px solid var(--brass)"><div class="result">' + md(data.reply) + '</div>' + stepHtml(data.steps) + '<div class="approve-row"><button id="approveBtn" type="button">Approve</button><button id="denyBtn" type="button">Deny</button></div><div id="approvalOut" class="outbox"></div><div class="meta"><span>' + esc(data.meta || "") + '</span></div></div>';
+  wireApproval(data.approvalId);
+};
 
 refresh();
 </script>
