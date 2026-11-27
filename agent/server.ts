@@ -157,29 +157,52 @@ const server = createServer(async (req, res) => {
         }
         resolveApproval(id, true, output);
 
-        // Resume the agent loop with the tool result so Alfred finishes the answer.
-        const resumed = await resumeAgentLoop(item, output, state.policy, state.usage);
-        state.usage = commitAction(state.usage, resumed.totalCost - (item.totalCost || 0));
-        const histItem: HistoryItem = {
-          id: Date.now().toString(36),
-          task: "Agent",
-          topic: item.goal || item.args.input || "approved tool",
-          reply: resumed.final,
-          ts: Date.now(),
-        };
-        state.history.unshift(histItem);
-        state.messages.push({ role: "user", content: `[approved ${item.tool}] ${item.args.input || ""}` });
-        state.messages.push({ role: "assistant", content: resumed.final });
-        save(state);
-        return {
-          ok: true,
-          status: resumed.status,
-          output,
-          reply: resumed.final,
-          steps: resumed.steps,
-          approvalId: resumed.approvalId,
-          meta: `Agent · resumed · cost ${resumed.totalCost} · spent ${state.usage.spentToday}/${state.policy.maxDaily}`,
-        };
+        try {
+          const resumed = await resumeAgentLoop(item, output, state.policy, state.usage);
+          const extra = Math.max(0, resumed.totalCost - (item.totalCost || 0));
+          state.usage = commitAction(state.usage, extra);
+          const histItem: HistoryItem = {
+            id: Date.now().toString(36),
+            task: "Agent",
+            topic: item.goal || item.args.input || "approved tool",
+            reply: resumed.final,
+            ts: Date.now(),
+          };
+          state.history.unshift(histItem);
+          state.messages.push({ role: "user", content: `[approved ${item.tool}] ${item.args.input || ""}` });
+          state.messages.push({ role: "assistant", content: resumed.final });
+          save(state);
+          return {
+            ok: true,
+            status: resumed.status,
+            output,
+            reply: resumed.final,
+            steps: resumed.steps,
+            approvalId: resumed.approvalId,
+            meta: `Agent · resumed · cost ${resumed.totalCost} · spent ${state.usage.spentToday}/${state.policy.maxDaily}`,
+          };
+        } catch (err: any) {
+          const reply = `The tool ran, but I could not finish the answer (${err.message || err}).\n\n${output.slice(0, 1500)}`;
+          const histItem: HistoryItem = {
+            id: Date.now().toString(36),
+            task: "Agent",
+            topic: item.goal || item.args.input || "approved tool",
+            reply,
+            ts: Date.now(),
+          };
+          state.history.unshift(histItem);
+          state.messages.push({ role: "user", content: `[approved ${item.tool}] ${item.args.input || ""}` });
+          state.messages.push({ role: "assistant", content: reply });
+          save(state);
+          return {
+            ok: true,
+            status: "stopped",
+            output,
+            reply,
+            steps: item.steps,
+            meta: `Tool ran · model did not finish · spent ${state.usage.spentToday}/${state.policy.maxDaily}`,
+          };
+        }
       });
       res.writeHead(200, headers());
       res.end(JSON.stringify(result));

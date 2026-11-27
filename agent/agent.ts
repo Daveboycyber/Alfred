@@ -63,7 +63,7 @@ export async function resumeAgentLoop(
   let lastTool = toolOutput;
   const maxSteps = Math.max(1, item.maxStepsLeft ?? 2);
 
-  return continueLoop(goal, policy, usage, steps, context, totalCost, lastTool, maxSteps);
+  return continueLoop(goal, policy, usage, steps, context, totalCost, lastTool, maxSteps, totalCost);
 }
 
 async function continueLoop(
@@ -74,10 +74,13 @@ async function continueLoop(
   context: string,
   totalCost: number,
   lastTool: string,
-  maxSteps: number
+  maxSteps: number,
+  committed = 0
 ): Promise<AgentResult> {
+  // `committed` is spend already written to usage before this call (the pause).
+  // Gate only the new spend, or the paused cost is counted twice.
   const gate = (cost: number) =>
-    checkAction(policy, { ...usage, spentToday: usage.spentToday + totalCost }, cost);
+    checkAction(policy, { ...usage, spentToday: usage.spentToday + Math.max(0, totalCost - committed) }, cost);
 
   const stopped = (reason: string): AgentResult => {
     steps.push({ thought: `Policy blocked further steps: ${reason}` });

@@ -113,3 +113,26 @@ test("resume after approve continues to FINAL", async () => {
   assert.ok(r.totalCost >= 6);
   assert.ok(r.steps.some(s => s.toolOutput && s.toolOutput.includes("Hello")));
 });
+
+test("resume does not double-count spend already committed", async () => {
+  mockDecision(() => "FINAL: done");
+  const { createApproval } = await import("./approvals");
+  const item = createApproval(
+    "fetch",
+    { input: "https://example.com" },
+    "test",
+    "read the page",
+    {
+      context: "Goal: read the page",
+      totalCost: 6,
+      steps: [{ thought: "Shall I fetch?", tool: "fetch", toolInput: "https://example.com", needsApproval: true }],
+      maxStepsLeft: 2,
+    }
+  );
+  // 14 already on the books, of which 6 is this pause. One more step (6) fits in a daily cap of 20.
+  const r = await resumeAgentLoop(item, "page text", { ...ok, maxDaily: 20 }, { ...usage, spentToday: 14 });
+  assert.equal(r.status, "ok");
+  assert.equal(r.final, "done");
+  assert.equal(r.totalCost, 12);
+  assert.equal(calls, 1);
+});
