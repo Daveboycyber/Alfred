@@ -309,6 +309,8 @@ textarea:focus { outline: none; border-color: rgba(201,165,96,.7); box-shadow: 0
 .log .detail { grid-column: 2 / 4; font: 11.5px/1.4 var(--mono); color: var(--faint); overflow-wrap: anywhere; }
 .log .right { text-align: right; font: 11.5px/1.6 var(--mono); color: var(--faint); white-space: nowrap; }
 .log .right .c { color: var(--muted); }
+.log-private { margin: 10px 0 0; font-size: 12.5px; color: var(--faint); }
+.log-private[hidden] { display: none; }
 .empty { color: var(--faint); font-size: 13px; padding: 6px 0 2px; }
 
 /* Dialogs */
@@ -461,7 +463,8 @@ dialog::backdrop { background: rgba(5, 10, 8, .65); backdrop-filter: blur(2px); 
 
       <section class="card" id="logCard" aria-labelledby="logTitle">
         <div class="card-h"><h2 id="logTitle">Leash log</h2><span class="sub" id="logCount" style="display:block;margin:0"></span></div>
-        <div class="card-b"><ul class="log" id="log"></ul></div>
+        <div class="card-b"><ul class="log" id="log"></ul>
+          <p class="log-private" id="logPrivate" hidden>Details are private to the owner. <button class="link-btn" type="button" id="logToken">Enter token</button></p></div>
       </section>
     </aside>
   </div>
@@ -596,6 +599,19 @@ async function post(path, body, retried) {
     if (t) return post(path, body, true);
   }
   return res;
+}
+function authHeaders() {
+  const t = store.get("alfred-token");
+  return t ? { "x-alfred-token": t } : {};
+}
+async function getJson(path) {
+  let res = await fetch(path, { headers: authHeaders() });
+  if (res.status === 401) {
+    const t = await askToken();
+    if (!t) return { error: "Admin token required" };
+    res = await fetch(path, { headers: authHeaders() });
+  }
+  try { return await res.json(); } catch { return { error: "Unexpected reply (" + res.status + ")" }; }
 }
 async function postJson(path, body) {
   const res = await post(path, body);
@@ -733,11 +749,15 @@ function wireApproval(id, topic) {
 }
 async function decide(id, allow, topic) {
   const a = $("approveBtn"), d = $("denyBtn");
+  const msg = $("decided");
   if (a) a.disabled = true; if (d) d.disabled = true;
-  if (allow) showWorking(topic);
+  if (msg) msg.innerHTML = allow ? '<span class="spin" style="display:inline-block;width:12px;height:12px;vertical-align:-1px;margin-right:6px"></span>Running the tool, then finishing the answer…' : "Declining…";
   try {
     const data = await postJson("/approvals/" + encodeURIComponent(id) + "/" + (allow ? "approve" : "deny"));
-    if (data.error) { showError(data.error); }
+    if (data.error) {
+      if (msg) msg.textContent = data.error;
+      if (a) a.disabled = false; if (d) d.disabled = false;
+    }
     else if (!allow) {
       showNote({ tag: "Approval", status: "stopped", topic, reply: "Declined. The tool did not run and nothing was spent.", meta: "denied · cost 0" });
     } else if (data.status === "needs_approval" && data.approvalId) {
@@ -746,7 +766,8 @@ async function decide(id, allow, topic) {
       showNote({ tag: "Agent · approved", status: data.status, topic, reply: data.reply || data.output || "", steps: data.steps, meta: data.meta });
     }
   } catch (e) {
-    showError("Could not reach Alfred: " + (e.message || e));
+    if (msg) msg.textContent = "Could not reach Alfred: " + (e.message || e);
+    if (a) a.disabled = false; if (d) d.disabled = false;
   }
   refresh();
 }
@@ -801,6 +822,7 @@ function renderStatus(r) {
   $("approvalsCount").textContent = r.approvals || 0;
 
   hist = r.history || [];
+  $("logPrivate").hidden = !(r.adminProtected && !r.owner);
   renderLog(r.events || []);
 }
 function renderLog(events) {
@@ -851,7 +873,7 @@ function renderPolicy(p) {
 }
 async function refresh() {
   try {
-    const [s, p] = await Promise.all([fetch("/status").then(r => r.json()), fetch("/policy").then(r => r.ok ? r.json() : null)]);
+    const [s, p] = await Promise.all([fetch("/status", { headers: authHeaders() }).then(r => r.json()), fetch("/policy").then(r => r.ok ? r.json() : null)]);
     renderStatus(s);
     if (p) renderPolicy(p);
   } catch {}
@@ -886,12 +908,14 @@ $("clearHistory").onclick = async () => {
   const d = await postJson("/clear-history"); $("limitsMsg").textContent = d.error || "Cleared."; refresh();
 };
 $("setToken").onclick = async () => { $("policyDialog").close(); await askToken(); refresh(); };
+$("logToken").onclick = async () => { await askToken(); refresh(); };
 $("forgetToken").onclick = () => { store.del("alfred-token"); refresh(); $("limitsMsg").textContent = "Token forgotten."; };
 
 $("approvalsBtn").onclick = async () => {
   $("apprList").innerHTML = '<p class="empty">Loading…</p>';
   $("approvalsDialog").showModal();
-  const r = await fetch("/approvals").then(r => r.json()).catch(() => ({ approvals: [] }));
+  const r = await getJson("/approvals").catch(() => ({ approvals: [] }));
+  if (r.error) { $("apprList").innerHTML = '<p class="empty">' + esc(r.error) + '</p>'; return; }
   const pend = (r.approvals || []).filter(a => a.status === "pending");
   $("apprList").innerHTML = pend.length ? pend.map(a =>
     '<div class="pend"><div class="t">' + esc(a.tool) + ' · ' + esc(ago(a.createdAt)) + ' ago</div>' +

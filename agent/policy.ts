@@ -35,8 +35,9 @@ export function checkTool(tool: string, input: string): { allowed: boolean; reas
 
   if (tool === "box_write") {
     if (!outbox) return { allowed: false, needsApproval: false, reason: "No outbox configured" };
+    // Input is "<folderId> <content>". The folder must be the outbox, always.
     const folder = input.trim().split(/\s+/)[0] ?? "";
-    if (input.includes(" ") && folder !== outbox) {
+    if (folder !== outbox) {
       return { allowed: false, needsApproval: false, reason: `Writes only allowed in outbox ${outbox}` };
     }
   }
