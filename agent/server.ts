@@ -10,6 +10,7 @@ import { runAgentLoop, resumeAgentLoop } from "./agent";
 import { createApproval, getApproval, listApprovals, resolveApproval } from "./approvals";
 import { LeashEvent, makeEvent, stepsToEvents, truncate } from "./events";
 import { STEP_COST, SYNTH_COST } from "./agent";
+import { clientIp } from "./net";
 
 let state: State = load();
 state.events ??= [];
@@ -126,8 +127,8 @@ async function runApprovedTool(tool: string, input: string): Promise<string> {
   if (tool === "calculate") return calculate(input);
   if (tool === "box_read") return boxRead(input.trim());
   if (tool === "box_write") {
-    const name = "alfred-note.txt";
-    const content = input.includes(" ") ? input.slice(input.indexOf(" ") + 1) : input;
+    const name = `alfred-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+    const content = input.trim().replace(/^\S+\s*/, "");
     return boxWrite(name, content);
   }
   return `Unknown tool ${tool}`;
@@ -136,7 +137,7 @@ async function runApprovedTool(tool: string, input: string): Promise<string> {
 const server = createServer(async (req, res) => {
   ensureDaily();
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
-  const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+  const ip = clientIp(req);
 
   if (req.method === "GET" && url.pathname === "/") {
     res.writeHead(200, { ...headers(), "Content-Type": "text/html; charset=utf-8" });
@@ -149,6 +150,9 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && url.pathname === "/status") {
+    // Questions, answers and tool inputs are the owner's. Visitors see the
+    // budget and what kind of decision was made, not what it was about.
+    const owner = checkToken(req);
     res.writeHead(200, headers());
     res.end(JSON.stringify({
       spentToday: state.usage.spentToday,
@@ -156,9 +160,10 @@ const server = createServer(async (req, res) => {
       maxSingle: state.policy.maxSingle,
       frozen: state.policy.frozen,
       adminProtected: !!TOKEN,
-      history: state.history.slice(0, 12),
+      owner,
+      history: owner ? state.history.slice(0, 12) : [],
       approvals: listApprovals().filter(a => a.status === "pending").length,
-      events: state.events.slice(-30),
+      events: state.events.slice(-30).map(e => owner ? e : { id: e.id, ts: e.ts, kind: e.kind, title: e.title, cost: e.cost }),
     }));
     return;
   }
@@ -168,6 +173,11 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && url.pathname === "/approvals") {
+    if (!checkToken(req)) {
+      res.writeHead(401, headers());
+      res.end(JSON.stringify({ error: "Admin token required" }));
+      return;
+    }
     res.writeHead(200, headers());
     res.end(JSON.stringify({ approvals: listApprovals() }));
     return;
@@ -182,6 +192,11 @@ const server = createServer(async (req, res) => {
     }
     const id = decodeURIComponent(approvalMatch[1]);
     const verb = approvalMatch[2];
+    if (verb === "approve" && state.policy.frozen) {
+      res.writeHead(409, headers());
+      res.end(JSON.stringify({ error: "Alfred is frozen. Unfreeze before approving; the tool has not run." }));
+      return;
+    }
     const item = getApproval(id);
     if (!item || item.status !== "pending") {
       res.writeHead(404, headers());
@@ -280,13 +295,15 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/freeze") {
-    await exclusive(async () => {
+    // Not queued behind exclusive(): a running agent reads this same policy
+    // object before every model call and tool, so it stops at the next one.
+    {
       state.policy.frozen = !state.policy.frozen;
       log(makeEvent(state.policy.frozen
         ? { kind: "frozen", title: "Frozen", detail: "Every action refused before the model" }
         : { kind: "unfrozen", title: "Unfrozen", detail: "Alfred may act again" }));
       save(state);
-    });
+    }
     res.writeHead(200, headers());
     res.end(JSON.stringify({ frozen: state.policy.frozen }));
     return;

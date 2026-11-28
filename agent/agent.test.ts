@@ -136,3 +136,35 @@ test("resume does not double-count spend already committed", async () => {
   assert.equal(r.totalCost, 12);
   assert.equal(calls, 1);
 });
+
+test("freezing mid-run stops before the tool runs", async () => {
+  const live: Policy = { ...ok };
+  let n = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    n++;
+    // The owner hits Freeze while the model is still deciding.
+    live.frozen = true;
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "TOOL: search\nINPUT: fly sprites" } }] }) } as any;
+  }) as any;
+  const r = await runAgentLoop("look something up", live, usage);
+  assert.equal(n, 1, "only the planning call, no search fetch and no further steps");
+  assert.equal(r.status, "stopped");
+  assert.match(r.final, /frozen/i);
+  assert.equal(r.totalCost, 6);
+});
+
+test("box write without a folder cannot bypass the outbox", async () => {
+  process.env.BOX_OUTBOX_ID = "outbox1";
+  mockDecision(() => "TOOL: box_write\nINPUT: secret.txt");
+  const r = await runAgentLoop("write a note", ok, usage);
+  assert.equal(r.status, "stopped");
+  assert.match(r.final, /outbox/);
+});
+
+test("box write into the outbox waits for approval", async () => {
+  process.env.BOX_OUTBOX_ID = "outbox1";
+  mockDecision(() => "TOOL: box_write\nINPUT: outbox1 hello");
+  const r = await runAgentLoop("write a note", ok, usage);
+  assert.equal(r.status, "needs_approval");
+});
