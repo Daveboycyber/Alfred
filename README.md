@@ -115,7 +115,7 @@ The owner proves identity with the `x-alfred-token` header, compared in constant
 - Credentials live in Sprites connectors, not on the Sprite.
 - State is written atomically to `~/.alfred/state.json`.
 - The UI escapes all text before rendering the small Markdown subset it supports.
-- `/ask` is public by design so judges can try it. It is rate-limited per client and can never spend more than the daily budget.
+- `/ask` is public by design so anyone can try it. It is rate-limited per client and can never spend more than the daily budget.
 
 ## Screenshots
 
