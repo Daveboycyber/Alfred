@@ -39,7 +39,7 @@ function policyView() {
     adminProtected: !!TOKEN,
     costs: { ...Object.fromEntries(Object.entries(TASKS).map(([k, v]) => [k, v.cost])), step: STEP_COST, synth: SYNTH_COST },
     tools: [
-      { name: "search", rule: rule("search"), note: process.env.EXA_GATEWAY_URL ? "Exa connector" : "DuckDuckGo" },
+      { name: "search", rule: rule("search"), note: process.env.EXA_API_KEY || process.env.EXA_GATEWAY_URL ? "Exa" : "DuckDuckGo" },
       { name: "calculate", rule: rule("calculate"), note: "Local, no network" },
       { name: "fetch", rule: rule("fetch"), note: domains.length ? `Only ${domains.join(", ")}` : "Public hosts only" },
       { name: "box_read", rule: rule("box_read", boxOn && folders.length > 0), note: boxOn ? `${folders.length} allowlisted folder${folders.length === 1 ? "" : "s"}` : "Box not connected" },

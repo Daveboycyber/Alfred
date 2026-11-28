@@ -59,21 +59,36 @@ export async function fetchPage(url: string): Promise<string> {
   return text.slice(0, 400_000);
 }
 
-export async function webSearch(query: string): Promise<string> {
-  const exa = process.env.EXA_GATEWAY_URL;
-  if (exa) {
+function formatExa(data: { results?: Array<{ title?: string; url?: string; highlights?: string[]; text?: string }> }): string {
+  const results = data.results || [];
+  return results.map((r, i) => {
+    const highlights = Array.isArray(r.highlights) ? r.highlights.join(" ") : (r.text || "");
+    return `${i + 1}. ${r.title || ""}\n${r.url || ""}\n${highlights}`;
+  }).join("\n\n") || "No results";
+}
+
+/** Exa /search. Key via EXA_API_KEY, or a Sprites connector at EXA_GATEWAY_URL that injects it. */
+export async function webSearch(query: string, objective?: string): Promise<string> {
+  const key = process.env.EXA_API_KEY;
+  const gateway = process.env.EXA_GATEWAY_URL?.replace(/\/$/, "");
+  const endpoint = key ? "https://api.exa.ai/search" : gateway ? `${gateway}/search` : "";
+  if (endpoint) {
     try {
-      const res = await fetch(`${exa}/search`, {
+      const body: Record<string, unknown> = {
+        query,
+        type: "auto",
+        contents: { highlights: true },
+      };
+      if (objective) body.objective = objective;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (key) headers["x-api-key"] = key;
+      const res = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, numResults: 5, contents: { text: { maxCharacters: 400 } } }),
+        headers,
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(8000),
       });
-      if (res.ok) {
-        const data = await res.json();
-        const results = data.results || [];
-        return results.map((r: any, i: number) => `${i + 1}. ${r.title}\n${r.url}\n${(r.text || "").slice(0, 300)}`).join("\n\n") || "No results";
-      }
+      if (res.ok) return formatExa(await res.json());
     } catch { /* fall through */ }
   }
 
