@@ -1,5 +1,6 @@
 import { callGrok } from "./llm";
 import { fetchPage, webSearch, calculate } from "./tools";
+import { boxRead } from "./box";
 import { checkAction, checkTool, Policy, Usage } from "./policy";
 import { createApproval, PendingAction } from "./approvals";
 
@@ -129,6 +130,9 @@ Be concise.`;
       continue;
     }
 
+    // Freeze may have been switched on while the model was thinking.
+    if (policy.frozen) return stopped("Agent is frozen");
+
     const tool = toolMatch[1].toLowerCase();
     const input = inputMatch[1].trim();
     const thought = decision.split("TOOL:")[0].replace("THINK:", "").trim();
@@ -191,6 +195,7 @@ Be concise.`;
       if (tool === "fetch") toolOutput = await fetchPage(input);
       else if (tool === "search") toolOutput = await webSearch(input);
       else if (tool === "calculate") toolOutput = calculate(input);
+      else if (tool === "box_read") toolOutput = await boxRead(input.trim());
       else toolOutput = `Tool ${tool} is waiting on a connector`;
     } catch (err: any) {
       toolOutput = `Tool error: ${err.message}`;

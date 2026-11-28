@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Policy, Usage } from "./policy";
+import type { LeashEvent } from "./events";
 
 const FILE = process.env.ALFRED_STATE || join(homedir(), ".alfred", "state.json");
 
@@ -18,6 +19,7 @@ export interface State {
   usage: Usage;
   history: HistoryItem[];
   messages: { role: "user" | "assistant"; content: string }[];
+  events: LeashEvent[];
 }
 
 const defaults: State = {
@@ -25,6 +27,7 @@ const defaults: State = {
   usage: { spentToday: 0, lastReset: new Date().toISOString().slice(0, 10) },
   history: [],
   messages: [],
+  events: [],
 };
 
 export function load(): State {
@@ -40,6 +43,7 @@ export function load(): State {
 export function save(state: State) {
   state.history = state.history.slice(0, 40);
   state.messages = state.messages.slice(-20);
+  state.events = (state.events ?? []).slice(-60);
   mkdirSync(dirname(FILE), { recursive: true });
   const tmp = FILE + ".tmp";
   writeFileSync(tmp, JSON.stringify(state, null, 2));
