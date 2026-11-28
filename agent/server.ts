@@ -8,8 +8,49 @@ import { fetchPage, webSearch, calculate, assertPublicUrl } from "./tools";
 import { boxRead, boxWrite } from "./box";
 import { runAgentLoop, resumeAgentLoop } from "./agent";
 import { createApproval, getApproval, listApprovals, resolveApproval } from "./approvals";
+import { LeashEvent, makeEvent, stepsToEvents, truncate } from "./events";
+import { STEP_COST, SYNTH_COST } from "./agent";
 
 let state: State = load();
+state.events ??= [];
+
+function log(...events: LeashEvent[]) {
+  state.events.push(...events);
+}
+
+function listEnv(name: string, fallback = ""): string[] {
+  return (process.env[name] ?? fallback).split(",").map(s => s.trim()).filter(Boolean);
+}
+
+/** The rules the leash enforces, for the UI. Read-only and secret-free. */
+function policyView() {
+  const approve = new Set(listEnv("ALFRED_APPROVE_TOOLS", "fetch,box_write"));
+  const boxOn = !!process.env.BOX_GATEWAY_URL;
+  const folders = listEnv("BOX_ALLOWED_FOLDERS");
+  const outbox = process.env.BOX_OUTBOX_ID ?? "";
+  const rule = (name: string, connected = true) =>
+    !connected ? "off" : approve.has(name) ? "approve" : "allow";
+  const domains = listEnv("ALFRED_ALLOWED_DOMAINS");
+  return {
+    maxSingle: state.policy.maxSingle,
+    maxDaily: state.policy.maxDaily,
+    frozen: state.policy.frozen,
+    adminProtected: !!TOKEN,
+    costs: { ...Object.fromEntries(Object.entries(TASKS).map(([k, v]) => [k, v.cost])), step: STEP_COST, synth: SYNTH_COST },
+    tools: [
+      { name: "search", rule: rule("search"), note: process.env.EXA_GATEWAY_URL ? "Exa connector" : "DuckDuckGo" },
+      { name: "calculate", rule: rule("calculate"), note: "Local, no network" },
+      { name: "fetch", rule: rule("fetch"), note: domains.length ? `Only ${domains.join(", ")}` : "Public hosts only" },
+      { name: "box_read", rule: rule("box_read", boxOn && folders.length > 0), note: boxOn ? `${folders.length} allowlisted folder${folders.length === 1 ? "" : "s"}` : "Box not connected" },
+      { name: "box_write", rule: rule("box_write", boxOn && !!outbox), note: boxOn ? (outbox ? "Outbox folder only" : "No outbox set") : "Box not connected" },
+    ],
+    network: {
+      allowedDomains: domains,
+      blocked: ["localhost & *.internal", "Private & loopback IPs", "Cloud metadata", ".flycast"],
+    },
+    model: "Grok via Sprites connector",
+  };
+}
 
 function ensureDaily() {
   const today = new Date().toISOString().slice(0, 10);
@@ -117,7 +158,13 @@ const server = createServer(async (req, res) => {
       adminProtected: !!TOKEN,
       history: state.history.slice(0, 12),
       approvals: listApprovals().filter(a => a.status === "pending").length,
+      events: state.events.slice(-30),
     }));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/policy") {
+    res.writeHead(200, headers());
+    res.end(JSON.stringify(policyView()));
     return;
   }
   if (req.method === "GET" && url.pathname === "/approvals") {
@@ -143,6 +190,10 @@ const server = createServer(async (req, res) => {
     }
     if (verb === "deny") {
       resolveApproval(id, false);
+      await exclusive(async () => {
+        log(makeEvent({ kind: "denied", title: `Denied ${item.tool}`, detail: `${item.tool}(${truncate(item.args.input || "", 80)}) · did not run` }));
+        save(state);
+      });
       res.writeHead(200, headers());
       res.end(JSON.stringify({ ok: true, status: "denied" }));
       return;
@@ -171,6 +222,12 @@ const server = createServer(async (req, res) => {
           state.history.unshift(histItem);
           state.messages.push({ role: "user", content: `[approved ${item.tool}] ${item.args.input || ""}` });
           state.messages.push({ role: "assistant", content: resumed.final });
+          const resumedSteps = resumed.steps.slice((item.steps || []).length);
+          log(
+            makeEvent({ kind: "approved", title: `Approved ${item.tool}`, detail: `${item.tool}(${truncate(item.args.input || "", 80)})` }),
+            ...stepsToEvents(resumedSteps),
+            makeEvent({ kind: resumed.status === "stopped" ? "declined" : "allowed", title: resumed.status === "stopped" ? "Stopped after approval" : "Answered after approval", detail: truncate(histItem.topic, 80), cost: extra, historyId: histItem.id }),
+          );
           save(state);
           return {
             ok: true,
@@ -193,6 +250,7 @@ const server = createServer(async (req, res) => {
           state.history.unshift(histItem);
           state.messages.push({ role: "user", content: `[approved ${item.tool}] ${item.args.input || ""}` });
           state.messages.push({ role: "assistant", content: reply });
+          log(makeEvent({ kind: "approved", title: `Approved ${item.tool}`, detail: "Tool ran, model did not finish", historyId: histItem.id }));
           save(state);
           return {
             ok: true,
@@ -224,6 +282,9 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/freeze") {
     await exclusive(async () => {
       state.policy.frozen = !state.policy.frozen;
+      log(makeEvent(state.policy.frozen
+        ? { kind: "frozen", title: "Frozen", detail: "Every action refused before the model" }
+        : { kind: "unfrozen", title: "Unfrozen", detail: "Alfred may act again" }));
       save(state);
     });
     res.writeHead(200, headers());
@@ -234,6 +295,7 @@ const server = createServer(async (req, res) => {
     await exclusive(async () => {
       state.usage.spentToday = 0;
       state.usage.lastReset = new Date().toISOString().slice(0, 10);
+      log(makeEvent({ kind: "policy", title: "Spend reset", detail: `0 of ${state.policy.maxDaily} used` }));
       save(state);
     });
     res.writeHead(200, headers());
@@ -244,6 +306,7 @@ const server = createServer(async (req, res) => {
     await exclusive(async () => {
       state.history = [];
       state.messages = [];
+      state.events = [];
       save(state);
     });
     res.writeHead(200, headers());
@@ -265,6 +328,7 @@ const server = createServer(async (req, res) => {
     await exclusive(async () => {
       state.policy.maxSingle = maxSingle;
       state.policy.maxDaily = maxDaily;
+      log(makeEvent({ kind: "policy", title: "Limits changed", detail: `${maxSingle} per action · ${maxDaily} per day` }));
       save(state);
     });
     res.writeHead(200, headers());
@@ -286,6 +350,10 @@ const server = createServer(async (req, res) => {
     } catch (err: any) {
       reason = err.message || "blocked";
     }
+    await exclusive(async () => {
+      log(makeEvent({ kind: "declined", title: "Declined fetch", detail: `fetch(${target}) · ${reason}`, cost: 0 }));
+      save(state);
+    });
     res.writeHead(200, headers());
     res.end(JSON.stringify({
       reply: `I stopped because of the policy: ${reason}. No model was called.`,
@@ -315,6 +383,10 @@ const server = createServer(async (req, res) => {
       toolInput: "https://example.com",
       needsApproval: true,
     }];
+    await exclusive(async () => {
+      log(makeEvent({ kind: "waiting", title: "Paused fetch for approval", detail: "fetch(https://example.com)" }));
+      save(state);
+    });
     res.writeHead(200, headers());
     res.end(JSON.stringify({
       reply: "Shall I proceed with fetch (https://example.com)?",
@@ -350,6 +422,7 @@ const server = createServer(async (req, res) => {
         let steps: any[] | undefined;
         let status = "ok";
         let approvalId: string | undefined;
+        let cost = 0;
 
         if (def.agent) {
           const r = await runAgentLoop(cleanTopic, state.policy, state.usage);
@@ -358,10 +431,15 @@ const server = createServer(async (req, res) => {
           status = r.status;
           approvalId = r.approvalId;
           state.usage = commitAction(state.usage, r.totalCost);
+          cost = r.totalCost;
           meta = `Agent · cost ${r.totalCost} · spent ${state.usage.spentToday}/${state.policy.maxDaily}`;
         } else {
           const check = checkAction(state.policy, state.usage, def.cost);
-          if (!check.allowed) return { error: `Policy blocked: ${check.reason}` };
+          if (!check.allowed) {
+            log(makeEvent({ kind: "declined", title: `Declined ${def.label.toLowerCase()}`, detail: `${truncate(cleanTopic, 60)} · ${check.reason}`, cost: 0 }));
+            save(state);
+            return { error: `Policy blocked: ${check.reason}` };
+          }
           let promptInput = cleanTopic;
           if (def.usesTool) {
             const urlMatch = cleanTopic.match(/https?:\/\/[^\s]+/);
@@ -372,6 +450,7 @@ const server = createServer(async (req, res) => {
           const ctx = recentContext();
           reply = await callGrok(def.prompt(promptInput, ctx));
           state.usage = commitAction(state.usage, def.cost);
+          cost = def.cost;
           meta = `${def.label} · cost ${def.cost} · spent ${state.usage.spentToday}/${state.policy.maxDaily}`;
         }
 
@@ -379,6 +458,16 @@ const server = createServer(async (req, res) => {
         state.messages.push({ role: "assistant", content: reply });
         const item: HistoryItem = { id: Date.now().toString(36), task: def.label, topic: cleanTopic, reply, ts: Date.now() };
         state.history.unshift(item);
+        log(
+          ...stepsToEvents(steps),
+          ...(status === "needs_approval" ? [] : [makeEvent({
+            kind: status === "stopped" ? "declined" : "allowed",
+            title: status === "stopped" ? `${def.label} stopped by policy` : `${def.label} answered`,
+            detail: truncate(cleanTopic, 80),
+            cost,
+            historyId: item.id,
+          })]),
+        );
         save(state);
         return { reply, meta, steps, status, approvalId };
       });
